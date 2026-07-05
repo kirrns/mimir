@@ -117,12 +117,58 @@ def _capture_handler(log_path: Path) -> Callable:
     return handler
 
 
+def _consolidate_handler(store, log_path: Path, *,
+                         judge: Optional[Callable] = None,
+                         probe: Optional[Callable] = None) -> Callable:
+    """`memify`: same EPISODEs-in -> judged/ε-gated/HMAC-signed-LESSONs-out pipeline
+    as `mimir consolidate` (mimir/cli.py), exposed live over MCP. `judge`/`probe`
+    mirror cli.py's `consolidate_main` injection points — inject fakes to test the
+    wiring token-free; left None, the live Claude judge is imported lazily (needs
+    the bench module / repo tree, not the packaged wheel — same graceful
+    error-message fallback as the CLI if it isn't importable)."""
+    def handler() -> dict:
+        from mimir.cli import DEFAULT_LESSONS, _citation_key, _episodes_from_log, save_lessons
+        from mimir.consolidate import consolidate as run_consolidate
+
+        episodes = _episodes_from_log(log_path)
+        if not episodes:
+            return {"admitted": 0, "active_lessons": len(store.active())}
+
+        live_judge = judge
+        if live_judge is None:
+            try:
+                from bench.claude_judge import make_live_judge  # lazy: only this tool needs it
+            except ImportError as exc:
+                return {"error": f"live consolidation needs the bench judge "
+                                 f"(run from the repo tree): {exc}"}
+            live_judge = make_live_judge()
+
+        # ponytail: same FR3 probe placeholder as cli.py consolidate_main — a live
+        # capture log has no held-out probe set; upgrade path is identical to the CLI's.
+        live_probe = probe or (lambda lessons: float(len(lessons)))
+        admitted = run_consolidate(episodes, store, judge=live_judge, probe=live_probe,
+                                   key=_citation_key())
+        save_lessons(store, DEFAULT_LESSONS)
+        return {"admitted": len(admitted), "active_lessons": len(store.active())}
+    return handler
+
+
+def _forget_handler(store) -> Callable:
+    def handler(lesson_id: str) -> dict:
+        store.retire(lesson_id)
+        return {"lesson_id": lesson_id, "status": "retired"}
+    return handler
+
+
 def build_tools(store, *, tau: float = TAU,
-                log_path: Optional[Path] = None) -> dict[str, Tool]:
-    """The MCP tool surface (BUILD_SPEC C4). `recall` is always live; `capture`
-    goes live when `log_path` is given (where to append EPISODEs). `consolidate`
-    and `attribute` stay declared — their handlers need injected LLM callables
-    (judge/probe/solver), bound only in a funded live run."""
+                log_path: Optional[Path] = None,
+                consolidate_judge: Optional[Callable] = None,
+                consolidate_probe: Optional[Callable] = None) -> dict[str, Tool]:
+    """The MCP tool surface (BUILD_SPEC C4): remember (capture) / memify (consolidate)
+    / recall / forget, all live. `recall` and `forget` are always live; `capture`
+    and `consolidate` go live when `log_path` is given (where EPISODEs are
+    appended/read). `attribute` stays declared-only — it needs an injected solver
+    callable, bound only inside the C5 benchmark harness."""
     return {
         "mimir.recall": Tool(
             name="mimir.recall",
@@ -151,7 +197,19 @@ def build_tools(store, *, tau: float = TAU,
         ),
         "mimir.consolidate": Tool(
             name="mimir.consolidate",
-            description="Run the slow-path consolidation job over EPISODEs since a cutoff (C2).",
-            input_schema=_schema({"since": {"type": "string"}}, []),
+            description="memify: distill logged failure EPISODEs into judged, ε-gated, "
+                        "HMAC-signed LESSONs and persist them (C2).",
+            input_schema=_schema({}, []),
+            handler=_consolidate_handler(store, log_path,
+                                        judge=consolidate_judge,
+                                        probe=consolidate_probe)
+                    if log_path is not None else None,
+        ),
+        "mimir.forget": Tool(
+            name="mimir.forget",
+            description="forget: retire a LESSON for good. Bi-temporal — the prior version "
+                        "stays on record (FR7 audit trail), but it's excluded from recall.",
+            input_schema=_schema({"lesson_id": {"type": "string"}}, ["lesson_id"]),
+            handler=_forget_handler(store),
         ),
     }

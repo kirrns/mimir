@@ -67,10 +67,10 @@ underneath:
 
 | Lifecycle stage | Where it lives in Mimir |
 |---|---|
-| **remember** | `mimir-hook` / `capture` — episodes logged from real agent sessions |
-| **memify** (improve) | `mimir consolidate` — failures distilled into judged, ε-gated, HMAC-signed lessons in the Cognee-backed store |
-| **recall** | `mimir-serve` — confidence-gated semantic retrieval over Cognee's LanceDB index |
-| **forget** | bi-temporal lifecycle — lessons are quarantined, superseded, or retired on evidence (never hard-deleted), and excluded from recall |
+| **remember** | `mimir install-hook` + `mimir.capture` — episodes logged from real agent sessions |
+| **memify** (improve) | `mimir consolidate` / `mimir.consolidate` — failures distilled into judged, ε-gated, HMAC-signed lessons in the Cognee-backed store |
+| **recall** | `mimir.recall`, served by `mimir-serve` — confidence-gated semantic retrieval over Cognee's LanceDB index |
+| **forget** | `mimir.forget` — explicit, bi-temporal retirement; lessons are also auto-quarantined/superseded on contradicting evidence (never hard-deleted), and excluded from recall either way |
 
 ## The benchmark (why "prove" isn't a metaphor)
 
@@ -90,13 +90,19 @@ a WARM−COLD lift smaller than the band is reported as noise, not a result.
 
 ## MCP tools
 
-`mimir-serve` exposes the tool surface over stdio:
+`mimir-serve` exposes the full lifecycle over stdio — any MCP client (Claude
+Code included) can drive it directly:
 
-- `recall` — confidence-gated lesson retrieval for the current context
-- `capture` — log an episode directly (when not using the hook)
+- `mimir.capture` (**remember**) — log an episode directly (when not using the hook)
+- `mimir.consolidate` (**memify**) — distill logged failures into judged, ε-gated,
+  HMAC-signed lessons in the Cognee-backed store
+- `mimir.recall` (**recall**) — confidence-gated, Cognee-ranked lesson retrieval
+  for the current context
+- `mimir.forget` (**forget**) — retire a lesson for good; bi-temporal, so the
+  prior version stays on record for audit but is excluded from recall
 
-`consolidate` and `attribute` run today via the CLI/bench harness and join the
-MCP surface once their LLM wiring is injectable server-side.
+`mimir.attribute` (single-lesson counterfactual credit) stays CLI/bench-only —
+it needs an injected solver callable, bound only inside the C5 benchmark harness.
 
 ## Development
 

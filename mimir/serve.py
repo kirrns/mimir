@@ -1,9 +1,10 @@
 """Optional MCP transport — binds Mimir's tool surface onto a FastMCP server.
 
 The core package stays dependency-free; the `mcp` SDK is imported lazily here so
-you install it only when you actually serve. Tools whose handler is None (they
-need injected LLM callables — `consolidate`/`attribute`) are skipped until that
-funded wiring lands; `recall` and (with a log_path) `capture` register live.
+you install it only when you actually serve. `recall` and `forget` register live
+always; `capture` and `consolidate` register live when a `log_path` is given.
+`attribute` stays declared-only — it needs an injected solver callable, bound
+only inside the C5 benchmark harness — and is skipped here.
 
     python -m mimir.serve            # serves over stdio (needs `pip install mcp`)
 """

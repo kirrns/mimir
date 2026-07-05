@@ -13,7 +13,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Optional
 
-from mimir.models import ACTIVE, SUPERSEDED, Lesson
+from mimir.models import ACTIVE, RETIRED, SUPERSEDED, Lesson
 
 
 def _now() -> datetime:
@@ -51,6 +51,12 @@ class InMemoryLessonStore:
         lesson = self._require(lesson_id)
         lesson.status = ACTIVE
         lesson.invalid_at = None
+
+    def retire(self, lesson_id: str) -> None:
+        """Explicit `forget`: retire a lesson for good (bi-temporal — never hard-delete)."""
+        lesson = self._require(lesson_id)
+        lesson.status = RETIRED
+        lesson.invalid_at = _now()
 
     def active(self) -> list[Lesson]:
         return [lo for lo in self._lessons.values()

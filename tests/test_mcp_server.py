@@ -71,8 +71,9 @@ def test_tool_surface_validates_and_recall_is_wired():
     store = _store(_lesson("use backoff on 429"))
     tools = M.build_tools(store)
 
-    # the full surface is registered (recall + attribute, plus capture/consolidate)
-    assert {"mimir.recall", "mimir.attribute", "mimir.capture", "mimir.consolidate"} <= set(tools)
+    # the full lifecycle surface is registered: remember/memify/recall/forget + attribute
+    assert {"mimir.recall", "mimir.attribute", "mimir.capture",
+            "mimir.consolidate", "mimir.forget"} <= set(tools)
 
     for tool in tools.values():
         schema = tool.input_schema
@@ -101,3 +102,53 @@ def test_capture_tool_is_live_when_log_path_given(tmp_path):
 def test_capture_tool_declared_only_without_log_path():
     tools = M.build_tools(_store())  # no log destination -> not bound
     assert tools["mimir.capture"].handler is None
+
+
+# --- memify (consolidate) / forget -------------------------------------------
+
+def _fake_judge(rule="always flush before reading"):
+    from mimir.consolidate import Verdict
+
+    def judge(ep):
+        return Verdict(rule=rule, specificity=0.9, generalizability=0.8, non_sycophancy=0.9)
+    return judge
+
+
+def test_consolidate_tool_declared_only_without_log_path():
+    tools = M.build_tools(_store())  # no log -> nothing to read episodes from
+    assert tools["mimir.consolidate"].handler is None
+
+
+def test_consolidate_tool_is_live_with_injected_judge(tmp_path):
+    import json
+
+    log = tmp_path / "episodes.jsonl"
+    log.write_text(json.dumps({
+        "action": "read stale cache", "context": "cache lookup",
+        "consequence": "returned expired data", "outcome_score": 0.0,
+        "session_id": "s1", "task_id": "t1", "id": "E1",
+    }) + "\n", encoding="utf-8")
+
+    store = InMemoryLessonStore()
+    tools = M.build_tools(store, log_path=log, consolidate_judge=_fake_judge(),
+                          consolidate_probe=lambda lessons: float(len(lessons)))
+
+    result = tools["mimir.consolidate"].handler()
+
+    assert result["admitted"] == 1
+    assert result["active_lessons"] == 1
+    admitted = store.active()[0]
+    assert admitted.rule == "always flush before reading"
+    assert admitted.citation  # FR7: HMAC-signed
+
+
+def test_forget_tool_retires_a_lesson():
+    lid = "L1"
+    store = _store(_lesson("stale rule", id=lid))
+    tools = M.build_tools(store)
+
+    result = tools["mimir.forget"].handler(lesson_id=lid)
+
+    assert result == {"lesson_id": lid, "status": "retired"}
+    assert lid not in {lo.id for lo in store.active()}
+    assert store.get(lid).status == "retired"

@@ -48,3 +48,6 @@ Thumbs.db
 # --- SAFETY: research & planning live in the PARENT dir and must NEVER enter this repo.
 # This repo root is the only thing tracked. Do not copy PRD.md, ideation.md,
 # *research*, *report*, harness_research_bible.md, or any Docs/ here.
+
+# --- Internal submission prep: never commit, never push ---
+INTERNAL_*.md

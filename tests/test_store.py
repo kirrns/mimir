@@ -59,6 +59,23 @@ def test_rollback_reactivates_superseded_lesson():
     assert old_id in {lo.id for lo in store.active()}
 
 
+def test_retire_excludes_lesson_but_keeps_it_on_record():
+    store = InMemoryLessonStore()
+    lid = store.add(_lesson("delete temp files after each run"))
+
+    store.retire(lid)
+
+    retired = store.get(lid)
+    # bi-temporal: retired, never hard-deleted, still fetchable for audit (FR7)
+    assert retired is not None
+    assert retired.status == "retired"
+    assert retired.invalid_at is not None
+    # active set excludes it
+    assert lid not in {lo.id for lo in store.active()}
+    # all() still surfaces it (audit trail)
+    assert lid in {lo.id for lo in store.all()}
+
+
 def test_snapshot_is_deterministic_and_order_independent():
     store_a = InMemoryLessonStore()
     store_a.add(_lesson("x", id="L1", valid_from=FIXED_TS))
