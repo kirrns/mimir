@@ -40,6 +40,8 @@ def build_results(tasks, *, repeats: int = 3, seed: int = 0, model: str = "defau
                   solver: Optional[Callable] = None) -> dict:
     """Run the three arms `repeats` times on a fresh poisoned store each pass and
     aggregate into the data.js payload."""
+    if repeats < 1:
+        raise ValueError(f"repeats must be >= 1, got {repeats}")
     rates = {k: [] for k in ARM_KEYS}
     passes = {t.id: {k: 0 for k in ARM_KEYS} for t in tasks}
 

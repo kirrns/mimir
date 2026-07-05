@@ -2,6 +2,8 @@
 reproduces COLD/NAIVE fail, WARM pass without calling the real `claude` CLI."""
 import json
 
+import pytest
+
 from bench import scoreboard
 from bench.live import TASKS
 
@@ -75,3 +77,8 @@ def test_write_data_js_roundtrip(tmp_path):
     payload = json.loads(text[len("window.RESULTS = "):].rstrip().rstrip(";"))
     assert payload["model"] == "fake"
     assert len(payload["arms"]) == 3
+
+
+def test_build_results_rejects_zero_repeats():
+    with pytest.raises(ValueError):
+        scoreboard.build_results(TASKS, repeats=0, seed=0, model="fake", solver=scripted_solver)

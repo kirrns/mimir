@@ -77,6 +77,7 @@
   var COLORS = { cold: getVar('--cold'), naive: getVar('--naive'), warm: getVar('--warm') };
   function getVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
   function pct(x) { return Math.round(x * 100) + '%'; }
+  function signed(x) { return (x >= 0 ? '+' : '') + pct(x); }
 
   // chips
   document.getElementById('chips').innerHTML =
@@ -106,8 +107,8 @@
 
   // lift line
   document.getElementById('lift').innerHTML =
-    'Lift vs. no memory: <b>+' + pct(R.lift.cold_to_warm) + '</b> &nbsp;·&nbsp; ' +
-    'vs. ungated memory: <b>+' + pct(R.lift.naive_to_warm) + '</b>';
+    'Lift vs. no memory: <b>' + signed(R.lift.cold_to_warm) + '</b> &nbsp;·&nbsp; ' +
+    'vs. ungated memory: <b>' + signed(R.lift.naive_to_warm) + '</b>';
 
   // grid
   var grid = document.getElementById('grid');
