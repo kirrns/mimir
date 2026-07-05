@@ -42,8 +42,12 @@ solver already exist in `bench/`.
   `Report.records` already stores per-task `{task_id, score, n_lessons, error}`,
   so per-task pass/fail data is available with no harness change.
 - `bench/live.py` — the live Sonnet solver (`cli_solver`), the fictional-API
-  `TASKS`, `seed_poison`, and `run_live_repeated`/`demo_band` for a repeated
-  noise band.
+  `TASKS` (3 tasks), `seed_poison`, `run_live` (one round, returns per-arm
+  `Report`s), and `run_live_repeated`/`demo_band` (repeated noise band).
+  **Note:** `run_live_repeated` returns only per-arm success-rate bands
+  (`{cold, naive, warm, lift_mean}`) and discards each `Report.records`, so it
+  cannot supply the per-task grid — the orchestrator iterates `run_live` per
+  repeat and aggregates `Report.records` itself.
 - `bench/claude_cli.py` — subprocess adapter calling `claude -p --output-format
   json`. It does **not** currently pass `--model`.
 - `mimir/mcp_server.py` — `recall(store, query, ...)`, the confidence-gated
@@ -79,13 +83,20 @@ call goes to Sonnet 5. This is the only change to existing code.
 
 Pure orchestration over the existing harness. Responsibilities:
 
-- Run COLD, NAIVE, and WARM arms for `repeats` rounds (default 3) using the live
-  Sonnet solver from `bench/live.py`, `seed_poison` for the NAIVE arm's poisoned
-  store, and `recall()` for the WARM arm.
-- Aggregate, per arm:
+- Run COLD, NAIVE, and WARM arms for `repeats` rounds (default 3) by calling
+  `run_live` per repeat (using the live Sonnet solver from `bench/live.py`,
+  `seed_poison` for the NAIVE arm's poisoned store, and `recall()` for the WARM
+  arm), and keep each round's per-arm `Report`s.
+- Aggregate, from the retained `Report`s, per arm:
   - mean success rate across repeats,
   - min and max success rate across repeats (the noise band),
-  - per-task pass count across repeats (`k` passes out of `n=repeats`).
+  - per-task pass count across repeats (`k` passes out of `n=repeats`), computed
+    from each `Report.records` — `run_live_repeated` cannot be reused here because
+    it discards `records`.
+- Map the harness arm labels (`COLD="cold"`, `COLD_NAIVE="cold+naive"`,
+  `WARM="warm"`) to the `data.js` keys (`cold` / `naive` / `warm`).
+- Emit success-rate / band values as fractions in `[0.0, 1.0]`; the HTML formats
+  them as percentages.
 - Write results to `bench/scoreboard/data.js` as
   `window.RESULTS = { ...json... };`.
   - Writing a `.js` global (not `.json`) lets `index.html` open by double-click
@@ -137,7 +148,7 @@ without spending tokens.
 
 ```
 MIMIR_CLAUDE_MODEL=sonnet python -m bench.scoreboard --repeats 3
-    │  (spends Sonnet 5 tokens once; ~45 solver calls at repeats=3)
+    │  (spends Sonnet 5 tokens once; 3 tasks × 3 arms × 3 repeats = 27 solver calls)
     ▼
 bench/scoreboard/data.js   (window.RESULTS = {...})
     │
@@ -167,8 +178,8 @@ Inherited from the existing harness:
 
 ## Configuration knobs
 
-- `--repeats` (default **3**): 3 gives a credible noise band (~45 Sonnet calls);
-  1 is a faster/cheaper single run (~15 calls).
+- `--repeats` (default **3**): with 3 tasks × 3 arms, 3 repeats = 27 Sonnet
+  calls (a credible noise band); 1 repeat = 9 calls (faster/cheaper single run).
 - Arms: all **3** are kept (NAIVE is the differentiator). Dropping to plain
   COLD/WARM is possible but not the default.
 - `MIMIR_CLAUDE_MODEL` (default unset → Claude Code default): set to `sonnet` for
