@@ -1,5 +1,23 @@
 # Mimir
 
+<p align="center">
+  <img alt="Mimir — agent memory that has to prove it helps" src="assets/mimir.png" width="640">
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+">
+  <a href="https://github.com/topoteretes/cognee"><img src="https://img.shields.io/badge/built%20on-Cognee-a78bfa.svg" alt="Built on Cognee"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/kirnsal/mimir/issues">Issues</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
+  <a href="CODE_OF_CONDUCT.md">Code of Conduct</a> ·
+  <a href="SECURITY.md">Security</a> ·
+  <a href="LICENSE">License</a>
+</p>
+
 **Agent memory that has to prove it helps.**
 
 Most memory layers for AI agents store things and hope retrieval makes the
@@ -9,6 +27,8 @@ performs better *with* it than *without* it.
 
 > Status: **v0.0.1 — in active development.** The lifecycle below works
 > end-to-end; interfaces will still move.
+
+---
 
 ## How it works
 
@@ -35,6 +55,8 @@ The unit of memory:
   citation back to its supporting episodes, and a bi-temporal lifecycle
   (`active → quarantined / superseded / retired` — never hard-deleted).
 
+---
+
 ## Quickstart
 
 ```bash
@@ -55,6 +77,8 @@ mimir-serve
 What you consolidate is what gets served — both sides run on the same
 Cognee/LanceDB-backed lesson store under `~/.mimir/`.
 
+---
+
 ## Built on Cognee
 
 Semantic storage and retrieval run on [Cognee](https://github.com/topoteretes/cognee)'s
@@ -72,6 +96,8 @@ underneath:
 | **recall** | `mimir.recall`, served by `mimir-serve` — confidence-gated semantic retrieval over Cognee's LanceDB index |
 | **forget** | `mimir.forget` — explicit, bi-temporal retirement; lessons are also auto-quarantined/superseded on contradicting evidence (never hard-deleted), and excluded from recall either way |
 
+---
+
 ## The benchmark (why "prove" isn't a metaphor)
 
 `bench/` contains a WARM/COLD attribution harness: the same tasks are run by
@@ -87,6 +113,8 @@ python -c "from bench.live import demo_band; demo_band(3)"  # live: real Claude 
 
 The live run prints each arm's mean success rate with a (min, max) noise band —
 a WARM−COLD lift smaller than the band is reported as noise, not a result.
+
+---
 
 ## MCP tools
 
@@ -104,6 +132,8 @@ Code included) can drive it directly:
 `mimir.attribute` (single-lesson counterfactual credit) stays CLI/bench-only —
 it needs an injected solver callable, bound only inside the C5 benchmark harness.
 
+---
+
 ## Development
 
 ```bash
@@ -114,6 +144,12 @@ pytest
 
 Python ≥ 3.10. The core package is dependency-free; `mcp` and `cognee` are
 optional extras imported lazily, so tests run without either installed.
+
+Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). This project
+follows the [Contributor Covenant](CODE_OF_CONDUCT.md). Found a security
+issue? See [SECURITY.md](SECURITY.md) rather than opening a public issue.
+
+---
 
 ## Hackathon note
 
