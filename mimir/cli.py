@@ -11,6 +11,8 @@ Installed by `pip install mimir`:
     mimir install-hook           # register mimir-hook into ~/.claude/settings.json
                                  #   (idempotent, backs up the old file)
     mimir install-hook --print   # just print the settings block to paste yourself
+    mimir install-hook --cline   # write the PostToolUse hook script Cline picks up
+                                 #   (capture only; ~/Documents/Cline/Rules/Hooks/)
 
 The end-to-end demo: install-hook (capture) -> use Claude -> `mimir consolidate`
 (distill lessons into the LanceDB-backed store) -> `mimir-serve` (gated recall
@@ -26,7 +28,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
-from mimir.capture import OUTCOME_FAIL, run_hook
+from mimir.capture import OUTCOME_FAIL, from_cline_hook, run_hook
 from mimir.models import Episode, Lesson
 
 DEFAULT_HOME = Path.home() / ".mimir"
@@ -37,6 +39,12 @@ DEFAULT_SETTINGS = Path.home() / ".claude" / "settings.json"
 HOOK_COMMAND = "mimir-hook"
 HOOK_EVENTS = ("PostToolUse", "SessionEnd")
 CITATION_KEY_ENV = "MIMIR_CITATION_KEY"
+
+# Cline has no settings.json to merge into — it picks up an executable script named after
+# the hook event from this directory (global scope; see docs.cline.bot/features/hooks).
+DEFAULT_CLINE_HOOKS_DIR = Path.home() / "Documents" / "Cline" / "Rules" / "Hooks"
+CLINE_HOOK_NAME = "PostToolUse"
+CLINE_HOOK_COMMAND = "mimir-hook-cline"
 
 
 def _log_path() -> Path:
@@ -169,11 +177,35 @@ def install_hook(settings_path: Path = DEFAULT_SETTINGS, *,
     return f"registered {command} for {', '.join(events)} in {settings_path}"
 
 
+def cline_hook_script(command: str = CLINE_HOOK_COMMAND) -> str:
+    """The executable script Cline invokes for PostToolUse (POSIX shell)."""
+    return f"#!/usr/bin/env sh\nexec {command}\n"
+
+
+def install_cline_hook(hooks_dir: Path = DEFAULT_CLINE_HOOKS_DIR, *,
+                       command: str = CLINE_HOOK_COMMAND) -> str:
+    """Write the PostToolUse hook script Cline picks up automatically. It's mimir's own
+    file (nothing to merge, unlike Claude Code's settings.json), so this just overwrites."""
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    script_path = hooks_dir / CLINE_HOOK_NAME
+    script_path.write_text(cline_hook_script(command), encoding="utf-8")
+    try:
+        script_path.chmod(script_path.stat().st_mode | 0o111)
+    except OSError:
+        pass  # ponytail: no POSIX exec bit on Windows; Cline's Windows invocation is unconfirmed
+    return f"wrote {script_path}"
+
+
 # ---- entry points ----------------------------------------------------------
 
 def hook_main(argv: Optional[list] = None) -> int:
     """`mimir-hook` — what a Claude Code hook invokes. Never raises, always 0."""
     return run_hook(sys.stdin.read(), log_path=_log_path())
+
+
+def hook_main_cline(argv: Optional[list] = None) -> int:
+    """`mimir-hook-cline` — what the Cline PostToolUse hook script invokes."""
+    return run_hook(sys.stdin.read(), log_path=_log_path(), mapper=from_cline_hook)
 
 
 def consolidate_main(argv: Optional[list] = None, *,
@@ -238,6 +270,12 @@ def main(argv: Optional[list] = None) -> int:
         return 0
     cmd, rest = argv[0], argv[1:]
     if cmd == "install-hook":
+        if "--cline" in rest:
+            if "--print" in rest:
+                print(cline_hook_script())
+            else:
+                print(install_cline_hook())
+            return 0
         if "--print" in rest:
             print(json.dumps(hook_block(), indent=2))
             return 0

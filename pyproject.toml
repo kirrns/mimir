@@ -18,6 +18,7 @@ cognee = ["cognee>=1.2"]
 [project.scripts]
 mimir = "mimir.cli:main"
 mimir-hook = "mimir.cli:hook_main"
+mimir-hook-cline = "mimir.cli:hook_main_cline"
 mimir-serve = "mimir.cli:serve_main"
 
 [tool.setuptools.packages.find]

@@ -1,0 +1,3 @@
+name: mimir-memory
+version: "0.0.1"
+description: Hermes memory provider backed by Mimir's evidence-gated lesson store.

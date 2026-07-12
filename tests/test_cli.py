@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from mimir.cli import add_hook_command, install_hook
+from mimir.cli import add_hook_command, cline_hook_script, install_cline_hook, install_hook
 
 
 def test_add_hook_command_is_idempotent():
@@ -38,6 +38,23 @@ def test_install_hook_writes_backs_up_and_is_idempotent(tmp_path):
 
     msg2 = install_hook(settings)  # second run is a no-op
     assert "already registered" in msg2
+
+
+def test_install_cline_hook_writes_executable_script(tmp_path):
+    hooks_dir = tmp_path / "Hooks"
+    msg = install_cline_hook(hooks_dir)
+    script = hooks_dir / "PostToolUse"
+    assert script.exists()
+    assert "mimir-hook-cline" in script.read_text(encoding="utf-8")
+    assert str(script) in msg
+
+    install_cline_hook(hooks_dir)  # re-running just overwrites; no error, still one file
+    assert list(hooks_dir.iterdir()) == [script]
+
+
+def test_cline_hook_script_execs_given_command():
+    assert "exec mimir-hook-cline" in cline_hook_script()
+    assert "exec other-cmd" in cline_hook_script("other-cmd")
 
 
 def test_install_hook_refuses_invalid_json(tmp_path):

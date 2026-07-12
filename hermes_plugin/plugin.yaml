@@ -1,0 +1,3 @@
+name: mimir
+version: "0.0.1"
+description: Captures agent tool-call failures into Mimir's evidence-gated lesson store.

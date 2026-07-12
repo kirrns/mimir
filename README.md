@@ -1,7 +1,7 @@
 # Mimir
 
 <p align="center">
-  <img alt="Mimir — agent memory that has to prove it helps" src="assets/mimir.png" width="640">
+  <img alt="Mimir — the agent memory that has to earn its keep" src="assets/mimir.png" width="640">
 </p>
 
 <p align="center">
@@ -18,12 +18,26 @@
   <a href="LICENSE">License</a>
 </p>
 
-**Agent memory that has to prove it helps.**
+**The agent memory that has to earn its keep.**
 
-Most memory layers for AI agents store things and hope retrieval makes the
-agent better. Mimir inverts that: every lesson it learns is evidence-gated,
-signed, and benchmarked — a lesson only survives if the agent measurably
-performs better *with* it than *without* it.
+You've felt this: your coding agent nails a fix, you move on, and three
+sessions later it makes the *exact same mistake* again. Every "memory" tool
+promises to fix this by hoarding everything it sees — every file, every
+message, every guess — and hoping that helps next time. Most of the time it
+doesn't. It just makes retrieval slower.
+
+Mimir does the opposite. It watches your agent fail, turns that failure into
+one specific, testable lesson — think of it like a skill your agent actually
+earns, not a memory dump — and only keeps it if a real before/after benchmark
+*proves* the agent performs measurably better with it. No proof, no lesson.
+Ever. And every lesson it does keep is HMAC-signed and traceable back to the
+failure that created it, so nothing gets into your agent's head without a
+paper trail.
+
+Install it once. Capture runs quietly in the background of every Claude Code
+session — it never blocks, never raises. From then on your agent gets
+sharper the more you use it, and you can always see exactly which lesson
+fixed which mistake.
 
 > Status: **v0.0.1 — in active development.** The lifecycle below works
 > end-to-end; interfaces will still move.
@@ -57,6 +71,47 @@ The unit of memory:
 
 ---
 
+## What this looks like day to day
+
+- **You install it once.** The hook logs failures in the background; you
+  never think about it again during a normal session.
+- **You run `mimir consolidate` when you want the last batch of failures
+  turned into lessons** — after a rough session, at the end of the day,
+  or on a cron job. It's a deliberate step, not a black box.
+- **From then on, recall is automatic.** Every session after that, the
+  agent pulls in whatever lessons actually clear the bar for the context
+  it's in — you don't ask for it, you just notice fewer repeat mistakes.
+- **You can always audit why.** Every lesson traces back to the specific
+  failure and the benchmark that proved it helped — `mimir.forget` retires
+  one instantly if it ever stops earning its keep.
+
+---
+
+## The benchmark (why "prove" isn't a metaphor)
+
+`bench/` contains a WARM/COLD attribution harness: the same tasks are run by
+an agent with Mimir's lessons (WARM) and without (COLD), with seeded runs, a
+held-out probe set, and an ε-gate — a lesson is only admitted if the measured
+lift clears the noise floor. This is the core bet: memory you can't attribute
+to an outcome improvement is just storage.
+
+|  | Typical memory layer | Mimir |
+|---|---|---|
+| What gets kept | Everything it sees | Only what clears the ε-gate |
+| Evidence | "Should help" | WARM vs. COLD, seeded, noise-banded |
+| Can you reproduce the claim? | Usually not — take the vendor's word | Yes — `demo_band()` is one command, on your machine |
+| Traceability | Opaque blob | HMAC-signed, cited back to the failing episode |
+
+```bash
+pytest tests/test_live.py                                    # token-free: injected fake model
+python -c "from bench.live import demo_band; demo_band(3)"  # live: real Claude via your CLI, ~27 calls
+```
+
+The live run prints each arm's mean success rate with a (min, max) noise band —
+a WARM−COLD lift smaller than the band is reported as noise, not a result.
+
+---
+
 ## Quickstart
 
 ```bash
@@ -77,6 +132,16 @@ mimir-serve
 What you consolidate is what gets served — both sides run on the same
 Cognee/LanceDB-backed lesson store under `~/.mimir/`.
 
+**Also on Cline and Hermes:** `mimir install-hook --cline` writes the
+`PostToolUse` hook script Cline picks up automatically (capture only).
+Hermes gets two drop-in plugins: `hermes_plugin/` captures tool-call
+failures the same way, and `hermes_memory_plugin/` goes further — it
+registers Mimir as an actual Hermes `MemoryProvider`, so `mimir.recall`
+serves lessons straight into Hermes' prompt (`memory.provider: mimir` in
+Hermes' `config.yaml`). New integrations, schemas not yet verified against a
+live session; [open an issue](https://github.com/kirnsal/mimir/issues) if
+something doesn't map correctly.
+
 ---
 
 ## Built on Cognee
@@ -95,24 +160,6 @@ underneath:
 | **memify** (improve) | `mimir consolidate` / `mimir.consolidate` — failures distilled into judged, ε-gated, HMAC-signed lessons in the Cognee-backed store |
 | **recall** | `mimir.recall`, served by `mimir-serve` — confidence-gated semantic retrieval over Cognee's LanceDB index |
 | **forget** | `mimir.forget` — explicit, bi-temporal retirement; lessons are also auto-quarantined/superseded on contradicting evidence (never hard-deleted), and excluded from recall either way |
-
----
-
-## The benchmark (why "prove" isn't a metaphor)
-
-`bench/` contains a WARM/COLD attribution harness: the same tasks are run by
-an agent with Mimir's lessons (WARM) and without (COLD), with seeded runs, a
-held-out probe set, and an ε-gate — a lesson is only admitted if the measured
-lift clears the noise floor. This is the core bet: memory you can't attribute
-to an outcome improvement is just storage.
-
-```bash
-pytest tests/test_live.py                                    # token-free: injected fake model
-python -c "from bench.live import demo_band; demo_band(3)"  # live: real Claude via your CLI, ~27 calls
-```
-
-The live run prints each arm's mean success rate with a (min, max) noise band —
-a WARM−COLD lift smaller than the band is reported as noise, not a result.
 
 ---
 

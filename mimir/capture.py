@@ -13,7 +13,7 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from mimir.models import Episode
 
@@ -34,6 +34,54 @@ def from_hook(event: dict) -> Episode:
         outcome_score=OUTCOME_FAIL if failed else OUTCOME_PASS,
         session_id=event.get("session_id", ""),
         task_id=event.get("task_id", ""),
+    )
+
+
+def from_cline_hook(event: dict) -> Episode:
+    """Map a Cline PostToolUse hook payload to an EPISODE. A failed tool call = a MISTAKE.
+
+    # ponytail: Cline's docs confirm the base fields are camelCase (taskId, toolName) but
+    # give the tool-call fields only in prose ("tool name, parameters, execution result"),
+    # with one example snippet showing snake_case (tool_input.command). This checks both
+    # conventions defensively; tighten to the real key names once verified against a live
+    # Cline payload.
+    """
+    tool_input = event.get("tool_input", event.get("toolInput", {}))
+    result = event.get("tool_response", event.get("toolResponse", event.get("result", {})))
+    result_dict = result if isinstance(result, dict) else {}
+    failed = bool(
+        event.get("is_error")
+        or result_dict.get("error")
+        or result_dict.get("success") is False
+    )
+    task_id = event.get("taskId", event.get("task_id", ""))
+    return Episode(
+        action=event.get("tool_name", event.get("toolName", "")),
+        context=json.dumps(tool_input, default=str),
+        consequence=json.dumps(result, default=str),
+        outcome_score=OUTCOME_FAIL if failed else OUTCOME_PASS,
+        session_id=task_id,  # Cline has no separate session concept; a task is the closest unit
+        task_id=task_id,
+    )
+
+
+def from_hermes_call(tool_name: str, params, result) -> Episode:
+    """Map a Hermes Agent `post_tool_call(tool_name, params, result)` callback to an EPISODE.
+
+    # ponytail: Hermes' post_tool_call isn't documented with a success/error field (a real
+    # Langfuse plugin for the same hook doesn't branch on one either) — this treats an
+    # exception result or a dict with a truthy "error" key as a MISTAKE, everything else
+    # as a pass. Tighten once Hermes documents a real outcome signal.
+    """
+    failed = isinstance(result, BaseException) or (
+        isinstance(result, dict) and bool(result.get("error"))
+    )
+    consequence = str(result) if isinstance(result, BaseException) else result
+    return Episode(
+        action=tool_name or "",
+        context=json.dumps(params, default=str),
+        consequence=json.dumps(consequence, default=str),
+        outcome_score=OUTCOME_FAIL if failed else OUTCOME_PASS,
     )
 
 
@@ -58,8 +106,11 @@ def capture(episode: Episode, *, log_path: Path) -> Optional[str]:
         return None
 
 
-def run_hook(stdin_text: str, *, log_path: Path) -> int:
-    """Entrypoint a Claude Code hook invokes: parse one event, capture it.
+def run_hook(stdin_text: str, *, log_path: Path,
+            mapper: Callable[[dict], Episode] = from_hook) -> int:
+    """Entrypoint a hook invokes: parse one event, capture it. `mapper` adapts a runtime's
+    own payload shape to an EPISODE — defaults to Claude Code's; pass `from_cline_hook` etc.
+    for other runtimes.
 
     Returns 0 ALWAYS — the fast-path contract is that a capture failure can
     never block the agent loop. Empty stdin (e.g. SessionEnd) is a no-op.
@@ -67,7 +118,7 @@ def run_hook(stdin_text: str, *, log_path: Path) -> int:
     try:
         text = stdin_text.strip()
         if text:
-            capture(from_hook(json.loads(text)), log_path=log_path)
+            capture(mapper(json.loads(text)), log_path=log_path)
     except Exception:  # swallow to honor the never-block contract; log loudly, never silent
         log.exception("mimir hook dropped a malformed event (agent unaffected)")
     return 0

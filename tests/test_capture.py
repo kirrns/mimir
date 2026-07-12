@@ -10,7 +10,15 @@ import json
 import logging
 import socket
 
-from mimir.capture import OUTCOME_FAIL, OUTCOME_PASS, capture, from_hook, run_hook
+from mimir.capture import (
+    OUTCOME_FAIL,
+    OUTCOME_PASS,
+    capture,
+    from_cline_hook,
+    from_hermes_call,
+    from_hook,
+    run_hook,
+)
 from mimir.models import Episode
 
 
@@ -90,3 +98,48 @@ def test_run_hook_ignores_empty_stdin(tmp_path):
     log = tmp_path / "episodes.jsonl"
     assert run_hook("", log_path=log) == 0  # SessionEnd may fire with no payload
     assert not log.exists()
+
+
+# --- Cline PostToolUse mapper: same contract, a different runtime's payload shape ---
+
+def test_cline_failed_tool_event_scored_as_fail():
+    fail = from_cline_hook({"toolName": "execute_command", "taskId": "t1",
+                            "tool_response": {"success": False}})
+    ok = from_cline_hook({"toolName": "execute_command", "taskId": "t1",
+                          "tool_response": {"success": True}})
+    assert fail.outcome_score == OUTCOME_FAIL
+    assert ok.outcome_score == OUTCOME_PASS
+
+
+def test_cline_hook_maps_task_id_to_session_and_task():
+    ep = from_cline_hook({"toolName": "execute_command", "taskId": "abc123"})
+    assert ep.session_id == "abc123"
+    assert ep.task_id == "abc123"
+
+
+def test_run_hook_accepts_a_mapper_for_other_runtimes(tmp_path):
+    log = tmp_path / "episodes.jsonl"
+    event = {"toolName": "execute_command", "taskId": "t1", "tool_response": {"success": False}}
+    rc = run_hook(json.dumps(event), log_path=log, mapper=from_cline_hook)
+    assert rc == 0
+    row = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+    assert row["action"] == "execute_command"
+    assert row["outcome_score"] == OUTCOME_FAIL
+
+
+# --- Hermes post_tool_call(tool_name, params, result) mapper: no dict payload here ---
+
+def test_hermes_call_maps_positional_args_to_episode():
+    ep = from_hermes_call("execute_command", {"cmd": "pytest"}, {"output": "ok"})
+    assert ep.action == "execute_command"
+    assert ep.outcome_score == OUTCOME_PASS
+
+
+def test_hermes_call_exception_result_scored_as_fail():
+    ep = from_hermes_call("execute_command", {"cmd": "pytest"}, RuntimeError("boom"))
+    assert ep.outcome_score == OUTCOME_FAIL
+
+
+def test_hermes_call_error_dict_scored_as_fail():
+    ep = from_hermes_call("execute_command", {}, {"error": "boom"})
+    assert ep.outcome_score == OUTCOME_FAIL
