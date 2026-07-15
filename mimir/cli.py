@@ -112,6 +112,17 @@ def _episodes_from_log(path: Path, *, failures_only: bool = True) -> list[Episod
     return episodes
 
 
+def _split_for_probe(episodes: list[Episode]) -> tuple[list[Episode], list[Episode]]:
+    """Held-out vs extraction split for the live epsilon-gate probe (FR3): last third
+    (minimum 1) held out. Fewer than 2 episodes -> no held-out evidence, extract from
+    all (the probe will then fail-closed to 0.0 -- see make_live_counterfactual_probe).
+    """
+    if len(episodes) < 2:
+        return [], episodes
+    n_held_out = max(1, len(episodes) // 3)
+    return episodes[-n_held_out:], episodes[:-n_held_out]
+
+
 # ---- pure, testable settings merge ----------------------------------------
 
 def add_hook_command(settings: dict, event: str, command: str) -> dict:
@@ -208,14 +219,15 @@ def hook_main_cline(argv: Optional[list] = None) -> int:
     return run_hook(sys.stdin.read(), log_path=_log_path(), mapper=from_cline_hook)
 
 
-def consolidate_main(argv: Optional[list] = None, *,
-                     judge: Optional[Callable] = None) -> int:
+def consolidate_main(argv: Optional[list] = None, *, judge: Optional[Callable] = None,
+                     probe: Optional[Callable] = None) -> int:
     """`mimir consolidate` — C2 slow path: logged failures -> gated LESSONs -> persist.
 
-    Builds the Cognee/LanceDB-backed store, runs EXTRACT (FR1 judge) -> RESOLVE
-    (FR2 contradiction) -> WRITE with an HMAC citation (FR7), then saves the store.
-    The judge is a real Claude call by default (subscription auth, no API key);
-    inject a fake `judge` to exercise the wiring token-free.
+    Builds the Cognee/LanceDB-backed store, runs EXTRACT (FR1 judge) -> ADMIT (FR3
+    live counterfactual epsilon-gate) -> RESOLVE (FR2 contradiction) -> WRITE with an
+    HMAC citation (FR7), then saves the store. `judge`/`probe` are real Claude calls
+    by default (subscription auth, no API key); inject fakes to exercise the wiring
+    token-free.
     """
     from mimir.consolidate import consolidate
 
@@ -225,6 +237,8 @@ def consolidate_main(argv: Optional[list] = None, *,
         return 0
 
     store = build_store()
+    total = len(episodes)
+
     if judge is None:
         try:
             from bench.claude_judge import make_live_judge  # lazy: only the live path needs it
@@ -234,14 +248,20 @@ def consolidate_main(argv: Optional[list] = None, *,
             return 1
         judge = make_live_judge()
 
-    # ponytail: the FR3 ε-gate needs a held-out probe TASK set (the C5 benchmark has one;
-    # a live capture log does not), so the CLI admits judge-passing lessons and leans on
-    # FR1 + FR2 + FR7. Wire a real solver-probe here once the agent has eval tasks.
-    probe = lambda lessons: float(len(lessons))
+    if probe is None:
+        try:
+            from bench.claude_judge import make_live_counterfactual_probe  # lazy, same reason
+        except ImportError as exc:
+            print(f"live consolidation needs the bench probe (run from the repo tree): {exc}",
+                  file=sys.stderr)
+            return 1
+        held_out, episodes = _split_for_probe(episodes)
+        probe = make_live_counterfactual_probe(held_out)
+
     before = len(store.active())
     admitted = consolidate(episodes, store, judge=judge, probe=probe, key=_citation_key())
     save_lessons(store, DEFAULT_LESSONS)
-    print(f"consolidated {len(episodes)} failure episodes -> {len(admitted)} new lesson(s); "
+    print(f"consolidated {total} failure episodes -> {len(admitted)} new lesson(s); "
           f"store now {len(store.active())} active (was {before}); saved {DEFAULT_LESSONS}")
     return 0
 

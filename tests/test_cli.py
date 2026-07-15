@@ -89,7 +89,8 @@ def test_consolidate_fills_store_and_serve_side_loads_it(tmp_path, monkeypatch):
 
     fake_judge = lambda ep: Verdict(rule="guard json decode against empty input",
                                     specificity=0.9, generalizability=0.8, non_sycophancy=0.9)
-    assert cli.consolidate_main(judge=fake_judge) == 0
+    fake_probe = lambda lessons: float(len(lessons))  # mimic original no-op; live probe wiring covered separately
+    assert cli.consolidate_main(judge=fake_judge, probe=fake_probe) == 0
     assert (tmp_path / "lessons.json").exists()
 
     # a fresh (serve-side) store built from the same paths recalls what consolidate wrote
@@ -112,3 +113,80 @@ def test_store_persistence_survives_reload_bitemporally(tmp_path):
     s2 = cli.build_store(lance_url=tmp_path / "b.db", lessons_path=lessons)
     assert {lo.id for lo in s2.active()} == {"L2"}        # bi-temporal state survives reload
     assert s2.get("L1").status == "superseded"
+
+
+def test_split_for_probe_holds_out_last_third_minimum_one():
+    import mimir.cli as cli
+    from mimir.models import Episode
+
+    eps = [Episode(id=str(i)) for i in range(6)]
+    held_out, extraction = cli._split_for_probe(eps)
+
+    assert held_out == eps[-2:]      # 6 // 3 = 2
+    assert extraction == eps[:-2]
+
+
+def test_split_for_probe_extracts_all_when_fewer_than_two_episodes():
+    import mimir.cli as cli
+    from mimir.models import Episode
+
+    assert cli._split_for_probe([]) == ([], [])
+    one = [Episode(id="1")]
+    assert cli._split_for_probe(one) == ([], one)
+
+
+def test_consolidate_main_wires_live_probe_with_held_out_split(tmp_path, monkeypatch):
+    pytest.importorskip("lancedb")
+    import bench.claude_judge as cj
+    import mimir.cli as cli
+    from mimir.capture import capture
+    from mimir.consolidate import Verdict
+    from mimir.models import Episode
+
+    log = tmp_path / "episodes.jsonl"
+    capture(Episode(action="a1", context="c1", consequence="boom1", outcome_score=0.0), log_path=log)
+    capture(Episode(action="a2", context="c2", consequence="boom2", outcome_score=0.0), log_path=log)
+    capture(Episode(action="a3", context="c3", consequence="boom3", outcome_score=0.0), log_path=log)
+
+    monkeypatch.setenv("MIMIR_EPISODE_LOG", str(log))
+    monkeypatch.setattr(cli, "DEFAULT_LESSONS", tmp_path / "lessons.json")
+    monkeypatch.setattr(cli, "DEFAULT_LANCE", tmp_path / "lance.db")
+
+    seen_held_out = []
+
+    def fake_make_probe(held_out, **kw):
+        seen_held_out.append(held_out)
+        return lambda lessons: float(len(lessons))  # improvement proportional to lessons admitted
+
+    monkeypatch.setattr(cj, "make_live_counterfactual_probe", fake_make_probe)
+
+    fake_judge = lambda ep: Verdict(rule=f"rule for {ep.action}",
+                                    specificity=0.9, generalizability=0.8, non_sycophancy=0.9)
+    assert cli.consolidate_main(judge=fake_judge) == 0
+
+    assert len(seen_held_out) == 1
+    held_out = seen_held_out[0]
+    assert len(held_out) == 1           # 3 episodes -> 1 held out (last third, min 1)
+    assert held_out[0].action == "a3"   # last episode held out, not extracted from
+
+
+def test_consolidate_main_admits_nothing_with_one_episode_no_probe_injected(tmp_path, monkeypatch):
+    pytest.importorskip("lancedb")
+    import mimir.cli as cli
+    from mimir.capture import capture
+    from mimir.consolidate import Verdict
+    from mimir.models import Episode
+
+    log = tmp_path / "episodes.jsonl"
+    capture(Episode(action="a1", context="c1", consequence="boom1", outcome_score=0.0), log_path=log)
+
+    monkeypatch.setenv("MIMIR_EPISODE_LOG", str(log))
+    monkeypatch.setattr(cli, "DEFAULT_LESSONS", tmp_path / "lessons.json")
+    monkeypatch.setattr(cli, "DEFAULT_LANCE", tmp_path / "lance.db")
+
+    fake_judge = lambda ep: Verdict(rule="a rule", specificity=0.9,
+                                    generalizability=0.8, non_sycophancy=0.9)
+    assert cli.consolidate_main(judge=fake_judge) == 0  # still exits 0
+
+    store = cli.build_store(lance_url=tmp_path / "lance.db", lessons_path=tmp_path / "lessons.json")
+    assert store.active() == []  # fail-closed: no held-out evidence, nothing admitted
