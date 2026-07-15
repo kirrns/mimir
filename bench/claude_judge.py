@@ -70,6 +70,39 @@ def make_live_judge(*, runner: Optional[Callable] = None):
     return judge
 
 
+_PROBE_PROMPT = (
+    "An AI coding agent has this lesson available: {rule}\n\n"
+    "It later failed a task with this episode:\n"
+    "  action: {action}\n  context: {context}\n  consequence: {consequence}\n\n"
+    "Would having this lesson available likely have prevented this failure? "
+    "Reply with ONLY one word: yes or no."
+)
+
+
+def make_live_counterfactual_probe(held_out: list[Episode], *, runner: Optional[Callable] = None):
+    """FR3 live probe for the CLI's single-user consolidate path: fraction of held-out
+    episodes the judge says a candidate lesson set would likely have prevented. One
+    structured call per held-out episode per probe() invocation -- cheaper than a full
+    solver replay (make_solver_probe below), same _runner injection seam as
+    make_live_judge, zero tokens in tests. Fail-closed: ambiguous replies count as 'no'.
+    """
+
+    def probe(lessons: list) -> float:
+        if not held_out or not lessons:
+            return 0.0
+        rules = "; ".join(lo.rule for lo in lessons)
+        hits = 0
+        for ep in held_out:
+            prompt = _PROBE_PROMPT.format(
+                rule=rules, action=ep.action, context=ep.context, consequence=ep.consequence)
+            reply = run_claude(prompt, _runner=runner).strip().lower()
+            if reply.startswith("yes"):
+                hits += 1
+        return hits / len(held_out)
+
+    return probe
+
+
 def make_solver_probe(held_out, solver):
     """FR3 held-out probe: real solver pass-rate on tasks the lesson was NOT extracted from.
 

@@ -3,9 +3,11 @@ import json
 
 from pytest import approx
 
-from bench.claude_judge import make_live_judge, make_solver_probe, _parse_verdict
+from bench.claude_judge import (
+    make_live_counterfactual_probe, make_live_judge, make_solver_probe, _parse_verdict,
+)
 from bench.live import CodeTask
-from mimir.models import Episode
+from mimir.models import Episode, Lesson
 
 
 def _runner(payload):
@@ -41,6 +43,30 @@ def test_scores_clamp_into_range():
     raw = '{"rule": "x", "specificity": 5, "generalizability": -2, "non_sycophancy": 0.5}'
     v = _parse_verdict(raw)
     assert v.specificity == 1.0 and v.generalizability == 0.0
+
+
+def test_counterfactual_probe_scores_fraction_of_held_out_prevented():
+    ep1 = Episode(action="a1", context="c1", consequence="boom1")
+    ep2 = Episode(action="a2", context="c2", consequence="boom2")
+    replies = iter(["yes", "no"])
+    runner = lambda prompt, timeout: json.dumps({"result": next(replies)})
+
+    probe = make_live_counterfactual_probe([ep1, ep2], runner=runner)
+
+    assert probe([Lesson(rule="guard empty input")]) == 0.5
+
+
+def test_counterfactual_probe_fails_closed_on_no_held_out_or_no_lessons():
+    ep = Episode(action="a", context="c", consequence="boom")
+    calls = []
+
+    def runner(prompt, timeout):
+        calls.append(prompt)
+        return json.dumps({"result": "yes"})
+
+    assert make_live_counterfactual_probe([], runner=runner)([Lesson(rule="x")]) == 0.0
+    assert make_live_counterfactual_probe([ep], runner=runner)([]) == 0.0
+    assert calls == []  # neither short-circuit called the runner
 
 
 def test_solver_probe_measures_real_pass_rate():
