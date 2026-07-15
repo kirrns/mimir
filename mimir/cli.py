@@ -288,8 +288,8 @@ def render_digest(lessons: list[Lesson]) -> str:
     if not lessons:
         return "# Mimir digest\n\nno active lessons yet.\n"
     lines = ["# Mimir digest", ""]
-    for lo in sorted(lessons, key=lambda lo: lo.confidence, reverse=True):
-        lines.append(f"- **{lo.rule}** (confidence: {lo.confidence:.2f}, id: {lo.id})")
+    for lesson in sorted(lessons, key=lambda lo: lo.confidence, reverse=True):
+        lines.append(f"- **{lesson.rule}** (confidence: {lesson.confidence:.2f}, id: {lesson.id})")
     return "\n".join(lines) + "\n"
 
 
@@ -301,7 +301,12 @@ def export_main(argv: Optional[list] = None) -> int:
     if "--digest" not in argv:
         print("usage: mimir export --digest", file=sys.stderr)
         return 2
-    store = build_store()
+    try:
+        store = build_store()
+    except ImportError as exc:
+        print(f"mimir export needs the serve deps: pip install 'mimir[mcp,cognee]' ({exc})",
+              file=sys.stderr)
+        return 1
     print(render_digest(store.active()))
     return 0
 

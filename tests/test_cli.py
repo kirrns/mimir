@@ -233,6 +233,15 @@ def test_export_main_prints_digest_from_store(tmp_path, monkeypatch, capsys):
     assert "pin tool versions before release" in out
 
 
+def test_export_main_handles_missing_cognee_deps(monkeypatch, capsys):
+    import mimir.cli as cli
+
+    monkeypatch.setattr(cli, "build_store", lambda **kw: (_ for _ in ()).throw(ImportError("No module named 'lancedb'")))
+    assert cli.export_main(["--digest"]) == 1
+    err = capsys.readouterr().err
+    assert "pip install 'mimir[mcp,cognee]'" in err
+
+
 def test_main_dispatches_export_command(monkeypatch):
     import mimir.cli as cli
 
