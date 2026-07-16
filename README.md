@@ -7,7 +7,6 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
   <img src="https://img.shields.io/badge/python-3.10%2B-blue.svg" alt="Python 3.10+">
-  <a href="https://github.com/topoteretes/cognee"><img src="https://img.shields.io/badge/built%20on-Cognee-a78bfa.svg" alt="Built on Cognee"></a>
 </p>
 
 <p align="center">
@@ -115,7 +114,7 @@ a WARM−COLD lift smaller than the band is reported as noise, not a result.
 ## Quickstart
 
 ```bash
-pip install 'mimir[mcp,cognee]'
+pip install 'mimir[mcp]'
 
 # 1. Capture: register the hook into Claude Code (~/.claude/settings.json)
 mimir install-hook          # idempotent; --print to paste the block yourself
@@ -130,7 +129,12 @@ mimir-serve
 ```
 
 What you consolidate is what gets served — both sides run on the same
-Cognee/LanceDB-backed lesson store under `~/.mimir/`.
+LanceDB-backed lesson store under `~/.mimir/`.
+
+**Windows:** pip installs the `mimir`/`mimir-hook`/`mimir-serve` commands into
+`%APPDATA%\Python\Python3XX\Scripts`, which often isn't on `PATH` by default —
+pip will warn about this at install time. If `mimir` isn't found afterward,
+add that folder to `PATH` (or run everything as `python -m mimir.cli ...`).
 
 **Also on Cline and Hermes:** `mimir install-hook --cline` writes the
 `PostToolUse` hook script Cline picks up automatically (capture only).
@@ -144,21 +148,31 @@ something doesn't map correctly.
 
 ---
 
-## Built on Cognee
+## Semantic storage
 
-Semantic storage and retrieval run on [Cognee](https://github.com/topoteretes/cognee)'s
-LanceDB vector engine (`mimir/store_cognee.py`). Lessons are embedded and
-recalled through Cognee; the persisted LESSON objects remain the source of
-truth and the vector index is rebuilt from them on load.
+Semantic storage and retrieval run directly on [LanceDB](https://github.com/lancedb/lancedb)
+(`mimir/store_cognee.py`). Lessons are embedded and recalled through a thin,
+swappable `VectorIndex` seam (LanceDB for a real on-disk store, or a
+zero-dependency in-process cosine index); the persisted LESSON objects remain
+the source of truth and the vector index is rebuilt from them on load.
 
-Mimir implements the full memory lifecycle, with Cognee as the semantic engine
-underneath:
+The default embedder is a dependency-free token-hashing bag-of-words (good
+enough for shared-vocabulary matches, zero install cost). For real semantic
+recall, opt into a local [fastembed](https://github.com/qdrant/fastembed)
+model (ONNX, no torch, no network after the first download):
+
+```bash
+pip install 'mimir[embed]'
+export MIMIR_EMBED_MODEL=BAAI/bge-small-en-v1.5   # any fastembed model name
+```
+
+Mimir implements the full memory lifecycle:
 
 | Lifecycle stage | Where it lives in Mimir |
 |---|---|
 | **remember** | `mimir install-hook` + `mimir.capture` — episodes logged from real agent sessions |
-| **memify** (improve) | `mimir consolidate` / `mimir.consolidate` — failures distilled into judged, ε-gated, HMAC-signed lessons in the Cognee-backed store |
-| **recall** | `mimir.recall`, served by `mimir-serve` — confidence-gated semantic retrieval over Cognee's LanceDB index |
+| **memify** (improve) | `mimir consolidate` / `mimir.consolidate` — failures distilled into judged, ε-gated, HMAC-signed lessons in the LanceDB-backed store |
+| **recall** | `mimir.recall`, served by `mimir-serve` — confidence-gated semantic retrieval over the LanceDB index |
 | **forget** | `mimir.forget` — explicit, bi-temporal retirement; lessons are also auto-quarantined/superseded on contradicting evidence (never hard-deleted), and excluded from recall either way |
 
 ---
@@ -170,9 +184,9 @@ Code included) can drive it directly:
 
 - `mimir.capture` (**remember**) — log an episode directly (when not using the hook)
 - `mimir.consolidate` (**memify**) — distill logged failures into judged, ε-gated,
-  HMAC-signed lessons in the Cognee-backed store
-- `mimir.recall` (**recall**) — confidence-gated, Cognee-ranked lesson retrieval
-  for the current context
+  HMAC-signed lessons in the LanceDB-backed store
+- `mimir.recall` (**recall**) — confidence-gated, semantically-ranked lesson
+  retrieval for the current context
 - `mimir.forget` (**forget**) — retire a lesson for good; bi-temporal, so the
   prior version stays on record for audit but is excluded from recall
 
@@ -185,12 +199,13 @@ it needs an injected solver callable, bound only inside the C5 benchmark harness
 
 ```bash
 git clone https://github.com/kirnsal/mimir && cd mimir
-pip install -e '.[dev,mcp,cognee]'
+pip install -e '.[dev,mcp]'
 pytest
 ```
 
-Python ≥ 3.10. The core package is dependency-free; `mcp` and `cognee` are
-optional extras imported lazily, so tests run without either installed.
+Python ≥ 3.10. The core package is dependency-free; `mcp` (protocol) and
+`lancedb` (vector store) are the `mcp` extra, imported lazily so tests run
+without either installed.
 
 Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). This project
 follows the [Contributor Covenant](CODE_OF_CONDUCT.md). Found a security

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from bench.harness import COLD, COLD_NAIVE, WARM, Report, Task, lift, run
-from mimir.consolidate import Verdict, consolidate
+from mimir.consolidate import Verdict, build_adoptions, circuit_breaker_sweep, consolidate
 from mimir.mcp_server import recall
 from mimir.models import QUARANTINED, Episode, Lesson
 from mimir.store import InMemoryLessonStore
@@ -120,6 +120,46 @@ def run_loop(store: InMemoryLessonStore, tasks: list[BugTask], *, key: str,
     warm = run(tasks, scripted_solver, arm=WARM,             # C4: gated recall
                recall=lambda t: recall(store, t.prompt).lessons, seed=seed)
     return cold, naive, warm
+
+
+def sweep_regressions(store: InMemoryLessonStore, warm: Report) -> list[str]:
+    """FR4 over a real WARM run: quarantine any active lesson whose adoption
+    correlates with worse outcomes than not adopting it -- the catastrophic-forgetting
+    gap SEAL's own authors flag as unsolved (self-edits degrade on regression, no
+    penalty), closed here for external memory instead of weights. Non-destructive:
+    a quarantined lesson stays on record (bi-temporal), just excluded from recall.
+    """
+    active_ids = [lo.id for lo in store.active()]
+    observations = build_adoptions(warm.records, active_ids)
+    return circuit_breaker_sweep(store, observations)
+
+
+def _poisoned_judge(tasks: list[BugTask]):
+    """Attacker-controlled judge (MINJA-style): proposes each task's TRAP rule as
+    the distilled lesson, trying to get poison admitted as a real LESSON through
+    ADMIT (FR3) -- not pre-seeded into the store like seed_poison()."""
+    by_id = {t.id: t for t in tasks}
+
+    def judge(ep: Episode) -> Verdict:
+        task = by_id[ep.task_id]
+        return Verdict(rule=task.trap_rule, specificity=0.9,
+                       generalizability=0.8, non_sycophancy=0.9)
+
+    return judge
+
+
+def poison_admission_demo() -> dict:
+    """C5 safety demo (b): a poisoned EPISODE goes through the real consolidate()
+    pipeline instead of being force-inserted (seed_poison() only proves recall
+    filters an already-quarantined lesson). The probe set (`_make_probe`) rewards
+    only fix_rule text, so epsilon_admit must reject every trap rule -- the
+    ε-gate itself is the defense, not a later quarantine sweep.
+    """
+    store = InMemoryLessonStore()
+    episodes = [_failure_episode(t) for t in TASKS]
+    admitted = consolidate(episodes, store, judge=_poisoned_judge(TASKS),
+                           probe=_make_probe(TASKS), key="poison-demo")
+    return {"admitted": len(admitted), "active": len(store.active())}
 
 
 def demo() -> None:  # pragma: no cover - manual run

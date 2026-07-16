@@ -29,7 +29,6 @@ class MimirMemoryProvider:
 
     def is_available(self) -> bool:
         try:
-            import cognee  # noqa: F401
             import lancedb  # noqa: F401
         except ImportError:
             return False

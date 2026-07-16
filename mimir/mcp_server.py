@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -26,6 +27,12 @@ MIN_SUPPORT = 1    # a lesson backed by fewer episodes than this counts as thin 
 _WORD = re.compile(r"[a-z0-9']+")
 
 
+# ponytail: bounded cache -- rule text is immutable once written (bi-temporal
+# supersede writes a new Lesson, never mutates .rule in place), so caching by
+# string is safe. maxsize must stay comfortably above the active-lesson count
+# or LRU eviction thrashes and makes calls slower than uncached (measured);
+# 20k is far past any realistic v1 store size -- raise further if that changes.
+@lru_cache(maxsize=20000)
 def _tokens(text: str) -> set[str]:
     return set(_WORD.findall(text.lower()))
 
@@ -108,10 +115,12 @@ def _schema(properties: dict, required: list[str]) -> dict:
 
 def _capture_handler(log_path: Path) -> Callable:
     def handler(action: str, context: str = "", consequence: str = "",
-                outcome_score: Optional[float] = None) -> Optional[str]:
+                outcome_score: Optional[float] = None,
+                recalled_lesson_ids: Optional[list[str]] = None) -> Optional[str]:
         return capture(
             Episode(action=action, context=context, consequence=consequence,
-                    outcome_score=outcome_score),
+                    outcome_score=outcome_score,
+                    recalled_lesson_ids=recalled_lesson_ids or []),
             log_path=log_path,
         )
     return handler
@@ -129,6 +138,7 @@ def _consolidate_handler(store, log_path: Path, *,
     def handler() -> dict:
         from mimir.cli import DEFAULT_LESSONS, _citation_key, _episodes_from_log, save_lessons
         from mimir.consolidate import consolidate as run_consolidate
+        from mimir.consolidate import sweep_episodes
 
         episodes = _episodes_from_log(log_path)
         if not episodes:
@@ -148,8 +158,15 @@ def _consolidate_handler(store, log_path: Path, *,
         live_probe = probe or (lambda lessons: float(len(lessons)))
         admitted = run_consolidate(episodes, store, judge=live_judge, probe=live_probe,
                                    key=_citation_key())
+
+        # FR4: same live circuit-breaker sweep as `mimir consolidate` (cli.py) --
+        # this MCP tool is the other entry point onto the same capture log.
+        all_episodes = _episodes_from_log(log_path, failures_only=False)
+        quarantined = sweep_episodes(store, all_episodes)
+
         save_lessons(store, DEFAULT_LESSONS)
-        return {"admitted": len(admitted), "active_lessons": len(store.active())}
+        return {"admitted": len(admitted), "active_lessons": len(store.active()),
+                "quarantined": len(quarantined)}
     return handler
 
 
@@ -190,7 +207,8 @@ def build_tools(store, *, tau: float = TAU,
             input_schema=_schema(
                 {"action": {"type": "string"}, "context": {"type": "string"},
                  "consequence": {"type": "string"},
-                 "outcome_score": {"type": "number"}},
+                 "outcome_score": {"type": "number"},
+                 "recalled_lesson_ids": {"type": "array", "items": {"type": "string"}}},
                 ["action"],
             ),
             handler=_capture_handler(log_path) if log_path is not None else None,

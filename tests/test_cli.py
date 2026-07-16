@@ -52,9 +52,55 @@ def test_install_cline_hook_writes_executable_script(tmp_path):
     assert list(hooks_dir.iterdir()) == [script]
 
 
+def test_install_cline_hook_uses_lf_line_endings_not_crlf(tmp_path):
+    """The shebang line must stay POSIX-clean even when written on Windows -- a
+    trailing \\r on '#!/usr/bin/env sh' breaks interpreter resolution."""
+    hooks_dir = tmp_path / "Hooks"
+    install_cline_hook(hooks_dir)
+    raw = (hooks_dir / "PostToolUse").read_bytes()
+    assert b"\r\n" not in raw
+    assert raw.startswith(b"#!/usr/bin/env sh\n")
+
+
 def test_cline_hook_script_execs_given_command():
     assert "exec mimir-hook-cline" in cline_hook_script()
     assert "exec other-cmd" in cline_hook_script("other-cmd")
+
+
+def test_ensure_utf8_stdio_reconfigures_streams_that_support_it(monkeypatch):
+    """Windows terminals often default to a legacy codepage that mangles the
+    em-dashes in Mimir's CLI text into mojibake; the CLI entry points call this
+    once so every print() doesn't have to avoid non-ASCII."""
+    import mimir.cli as cli
+
+    calls = []
+
+    class _Reconfigurable:
+        def reconfigure(self, encoding):
+            calls.append(encoding)
+
+    class _NotReconfigurable:
+        pass  # e.g. some redirected/piped stream types lack reconfigure entirely
+
+    monkeypatch.setattr(cli.sys, "stdout", _Reconfigurable())
+    monkeypatch.setattr(cli.sys, "stderr", _NotReconfigurable())
+
+    cli._ensure_utf8_stdio()  # must not raise even though stderr can't reconfigure
+
+    assert calls == ["utf-8"]
+
+
+def test_ensure_utf8_stdio_swallows_reconfigure_errors(monkeypatch):
+    import mimir.cli as cli
+
+    class _Uncooperative:
+        def reconfigure(self, encoding):
+            raise ValueError("stream already in use")
+
+    monkeypatch.setattr(cli.sys, "stdout", _Uncooperative())
+    monkeypatch.setattr(cli.sys, "stderr", _Uncooperative())
+
+    cli._ensure_utf8_stdio()  # must not raise
 
 
 def test_install_hook_refuses_invalid_json(tmp_path):
@@ -113,6 +159,37 @@ def test_store_persistence_survives_reload_bitemporally(tmp_path):
     s2 = cli.build_store(lance_url=tmp_path / "b.db", lessons_path=lessons)
     assert {lo.id for lo in s2.active()} == {"L2"}        # bi-temporal state survives reload
     assert s2.get("L1").status == "superseded"
+
+
+def test_build_store_defaults_to_hash_embed_without_env_var(tmp_path, monkeypatch):
+    pytest.importorskip("lancedb")
+    import mimir.cli as cli
+    from mimir.store_cognee import hash_embed
+
+    monkeypatch.delenv(cli.EMBED_MODEL_ENV, raising=False)
+    store = cli.build_store(lance_url=tmp_path / "lance.db", lessons_path=tmp_path / "lessons.json")
+    assert store._index._embed is hash_embed  # unchanged zero-dependency default
+
+
+def test_build_store_uses_fastembed_when_env_var_set(tmp_path, monkeypatch):
+    pytest.importorskip("lancedb")
+    import mimir.cli as cli
+    import mimir.store_cognee as sc
+    from mimir.models import Lesson
+
+    calls = []
+
+    def fake_fastembed(texts, *, model_name):
+        calls.append(model_name)
+        return sc.hash_embed(texts)  # any valid Embed impl -- proving it's routed, not its quality
+
+    monkeypatch.setattr(sc, "fastembed_embed", fake_fastembed)
+    monkeypatch.setenv(cli.EMBED_MODEL_ENV, "fake/model")
+
+    store = cli.build_store(lance_url=tmp_path / "lance.db", lessons_path=tmp_path / "lessons.json")
+    store.add(Lesson(rule="flush the buffer", id="L1"))
+
+    assert calls == ["fake/model"]
 
 
 def test_split_for_probe_holds_out_last_third_minimum_one():
@@ -233,13 +310,13 @@ def test_export_main_prints_digest_from_store(tmp_path, monkeypatch, capsys):
     assert "pin tool versions before release" in out
 
 
-def test_export_main_handles_missing_cognee_deps(monkeypatch, capsys):
+def test_export_main_handles_missing_serve_deps(monkeypatch, capsys):
     import mimir.cli as cli
 
     monkeypatch.setattr(cli, "build_store", lambda **kw: (_ for _ in ()).throw(ImportError("No module named 'lancedb'")))
     assert cli.export_main(["--digest"]) == 1
     err = capsys.readouterr().err
-    assert "pip install 'mimir[mcp,cognee]'" in err
+    assert "pip install 'mimir[mcp]'" in err
 
 
 def test_main_dispatches_export_command(monkeypatch):

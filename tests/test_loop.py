@@ -47,6 +47,16 @@ def test_ablation_credits_the_fix_lesson():
     assert credit == 1.0  # removing it flips the task from solved to failed
 
 
+def test_poison_admission_demo_rejects_injected_poisoned_episode():
+    """C5 safety demo (b): distinct from seed_poison (which force-inserts an
+    already-quarantined lesson, proving only that recall filters it). Here a
+    poisoned EPISODE is fed through the real consolidate() pipeline -- the
+    ε-gate (FR3) itself must reject it, because the probe set never rewards a
+    trap rule, so the poison never becomes an admitted, active LESSON at all."""
+    result = loop.poison_admission_demo()
+    assert result == {"admitted": 0, "active": 0}
+
+
 def test_poisoned_lesson_excluded_from_warm_recall():
     store = InMemoryLessonStore()
     loop.seed_poison(store)
@@ -54,3 +64,44 @@ def test_poisoned_lesson_excluded_from_warm_recall():
     task = loop.TASKS[0]
     recalled = {lo.rule for lo in recall(store, task.prompt).lessons}
     assert task.trap_rule not in recalled
+
+
+# --- FR4 circuit breaker over a real WARM run (the SEAL-gap: forgetting/regression) ---
+
+# A lesson that legitimately fixes task A also gets lexically recalled for task B
+# (shared vocabulary), where it actively misleads the solver (it IS task B's trap).
+# No pre-seeded poison: this lesson passes ADMIT (C2's ε-gate) same as any other
+# lesson -- the regression only shows up once it's adopted across real WARM tasks.
+SWEEP_TASKS = [
+    loop.BugTask(
+        id="s-a", prompt="alpha uses zzzshared token pattern",
+        fix_rule="R1 zzzshared token pattern fixes alpha",
+        trap_rule="unused-trap-a",
+    ),
+    loop.BugTask(
+        id="s-b", prompt="beta uses zzzshared token pattern too",
+        fix_rule="R2 totally unrelated filler text nobody recalls",
+        trap_rule="R1 zzzshared token pattern fixes alpha",  # == s-a's fix: misapplied here
+    ),
+    loop.BugTask(
+        id="s-c", prompt="gamma has an entirely different db index issue",
+        fix_rule="R3 rebuild the db index for gamma",
+        trap_rule="unused-trap-c",
+    ),
+]
+
+
+def test_sweep_regressions_quarantines_a_lesson_that_regresses_other_tasks():
+    store = InMemoryLessonStore()
+    cold, naive, warm = loop.run_loop(store, SWEEP_TASKS, key="k", seed=0)
+    assert warm.success_rate < 1.0  # sanity: s-b really did fail, misled by s-a's fix
+
+    quarantined_rules = {
+        lo.rule for lo in store.all()
+        if lo.id in loop.sweep_regressions(store, warm) and lo.status == "quarantined"
+    }
+
+    assert quarantined_rules == {"R1 zzzshared token pattern fixes alpha"}
+    active_rules = {lo.rule for lo in store.active()}
+    assert "R2 totally unrelated filler text nobody recalls" in active_rules
+    assert "R3 rebuild the db index for gamma" in active_rules

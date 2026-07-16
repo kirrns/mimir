@@ -20,10 +20,11 @@ import hashlib
 import hmac
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from statistics import mean
 from typing import Callable, Iterable
 
-from mimir.models import Episode, Lesson, QUARANTINED
+from mimir.models import QUARANTINED, RETIRED, SUPERSEDED, Episode, Lesson
 
 EPSILON = 0.05          # FR3: min probe improvement to admit a lesson
 JUDGE_THRESHOLD = 0.5   # FR1: min per-criterion judge score to keep a lesson
@@ -121,6 +122,11 @@ _STOP = {"a", "an", "the", "to", "of", "in", "on", "for", "and", "or", "with",
 _WORD = re.compile(r"[a-z0-9']+")
 
 
+# ponytail: bounded cache -- rule text is immutable once written, so caching by
+# string is safe. maxsize must stay comfortably above the active-lesson count
+# or LRU eviction thrashes and makes calls slower than uncached (measured);
+# 20k is far past any realistic v1 store size -- raise further if that changes.
+@lru_cache(maxsize=20000)
 def _tokens(text: str) -> set[str]:
     return set(_WORD.findall(text.lower()))
 
@@ -163,6 +169,57 @@ def circuit_breaker_sweep(store, observations: dict[str, list[Adoption]],
             lesson.status = QUARANTINED  # store.active() filters it out from here on
             quarantined.append(lesson.id)
     return quarantined
+
+
+def build_adoptions(records: Iterable[dict], active_ids: Iterable[str]) -> dict[str, list[Adoption]]:
+    """Turn a WARM Report's records (bench.harness.run, each carrying 'lesson_ids' + 'score')
+    into the per-lesson Adoption observations circuit_breaker_sweep needs.
+
+    Every currently-active lesson is a candidate for every task: adopted=True on the
+    tasks that actually recalled it, adopted=False (with that task's own score) on the
+    ones that didn't. A lesson recalled for none of the tasks gets no with_l samples and
+    is left alone by circuit_breaker_sweep -- silence isn't evidence of regression.
+    """
+    records = list(records)
+    observations: dict[str, list[Adoption]] = {lid: [] for lid in active_ids}
+    for r in records:
+        recalled = set(r.get("lesson_ids", ()))
+        score = r["score"]
+        for lid in observations:
+            observations[lid].append(Adoption(adopted=lid in recalled, outcome_score=score))
+    return observations
+
+
+def sweep_episodes(store, episodes: Iterable) -> list[str]:
+    """FR4 over the real capture log: live-path counterpart to bench.loop.sweep_regressions,
+    built from EPISODE.outcome_score + EPISODE.recalled_lesson_ids instead of a bench
+    Report's records. Episodes with no recorded outcome (still unscored) carry no signal.
+    """
+    active_ids = [lo.id for lo in store.active()]
+    records = [{"score": ep.outcome_score, "lesson_ids": ep.recalled_lesson_ids}
+              for ep in episodes if ep.outcome_score is not None]
+    observations = build_adoptions(records, active_ids)
+    return circuit_breaker_sweep(store, observations)
+
+
+# --- C5 quality-gate reporting -----------------------------------------------
+
+def quality_gate_report(store) -> dict:
+    """C5 headline quality gate: contradiction rate (FR2 supersede), stale-lesson
+    rate (superseded + retired), and quarantine events (FR4), over every lesson
+    the store has ever held (`store.all()`, not just active ones).
+    """
+    lessons = store.all()
+    total = len(lessons)
+    superseded = sum(1 for lo in lessons if lo.status == SUPERSEDED)
+    retired = sum(1 for lo in lessons if lo.status == RETIRED)
+    quarantined = sum(1 for lo in lessons if lo.status == QUARANTINED)
+    return {
+        "total_lessons": total,
+        "contradiction_rate": superseded / total if total else 0.0,
+        "stale_lesson_rate": (superseded + retired) / total if total else 0.0,
+        "quarantine_events": quarantined,
+    }
 
 
 # --- Orchestration -----------------------------------------------------------

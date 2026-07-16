@@ -28,6 +28,7 @@ class Episode:
     task_id: str = ""
     timestamp: Optional[datetime] = None
     id: str = ""
+    recalled_lesson_ids: list[str] = field(default_factory=list)  # FR4: what C4 recall handed back
 
 
 @dataclass

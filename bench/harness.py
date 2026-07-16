@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import random
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import mean
@@ -59,10 +60,36 @@ class Report:
             return 0.0
         return sum(1 for r in self.records if r["score"] >= PASS_SCORE) / len(self.records)
 
+    @property
+    def mean_duration_s(self) -> float:
+        return mean(r["duration_s"] for r in self.records) if self.records else 0.0
+
+    @property
+    def mean_lesson_chars(self) -> float:
+        return mean(r["n_lesson_chars"] for r in self.records) if self.records else 0.0
+
 
 # solver(payload, lessons) -> answer ; recall(task) -> list[lessons]
 Solver = Callable[[Any, list], Any]
 Recall = Callable[[Task], list]
+
+
+def _apply_budget(lessons: list, budget: Optional[int]) -> list:
+    """C5 equal-budget control: cap total recalled-lesson chars at `budget` so a
+    WARM win proves better context selection, not more context volume. Keeps the
+    highest-ranked (leading) lessons — recall() already ranks by relevance — and
+    drops the rest once the ceiling would be crossed.
+    """
+    if budget is None:
+        return lessons
+    kept, total = [], 0
+    for lo in lessons:
+        n = len(getattr(lo, "rule", ""))
+        if total + n > budget:
+            break
+        kept.append(lo)
+        total += n
+    return kept
 
 
 def run(
@@ -73,12 +100,22 @@ def run(
     arm: Optional[str] = None,
     seed: int = 0,
     log_path: Optional[Path] = None,
+    budget: Optional[int] = None,
+    _clock: Callable[[], float] = time.perf_counter,
 ) -> Report:
     """Run a task set through the solver and score each.
 
     `arm` names the experiment arm (COLD / COLD_NAIVE / WARM). COLD+naive and WARM
     both pass a `recall` callable, so the label must be explicit to keep them apart;
     when omitted it falls back to COLD/WARM by recall presence (back-compat).
+
+    `budget` (chars of recalled-lesson text, C5 equal-budget control) applies
+    identically to every arm passed the same value — the honesty bar that stops a
+    naive context-stuffing arm from winning purely on volume.
+
+    Each record also carries `duration_s` (wall time around the solver call) and
+    `n_lesson_chars` (recalled-lesson text volume, post-budget) — the C5 net-value
+    cost signal (`net_value()` below). `_clock` is injectable for deterministic tests.
     """
     random.seed(seed)  # reproducibility: any solver stochasticity is pinned to the seed
     if arm is None:
@@ -86,8 +123,9 @@ def run(
     report = Report(arm=arm, seed=seed)
 
     for task in tasks:
-        lessons = recall(task) if recall is not None else []
+        lessons = _apply_budget(recall(task) if recall is not None else [], budget)
         error: Optional[str] = None
+        start = _clock()
         try:
             answer = solver(task.payload, lessons)
             score = float(task.verify(answer))
@@ -99,8 +137,13 @@ def run(
             # Surface it: with a live network solver a crash is usually infra (rate-limit/
             # timeout), NOT a wrong answer — silently scoring 0.0 would corrupt the headline.
             print(f"[harness] solver error on {task.id} ({arm}): {error}", file=sys.stderr)
+        duration = _clock() - start
         report.records.append({"task_id": task.id, "score": score,
-                               "n_lessons": len(lessons), "error": error})
+                               "n_lessons": len(lessons),
+                               "lesson_ids": [getattr(lo, "id", None) for lo in lessons],
+                               "duration_s": duration,
+                               "n_lesson_chars": sum(len(getattr(lo, "rule", "")) for lo in lessons),
+                               "error": error})
 
     if log_path is not None:
         _write_log(report, Path(log_path))
@@ -126,6 +169,23 @@ def lift(warm: Report, cold: Report) -> dict:
         "mean_score_lift": warm.mean_score - cold.mean_score,
         "success_rate_lift": warm.success_rate - cold.success_rate,
     }
+
+
+def net_value(warm: Report, cold: Report, *,
+             cost_per_second: float = 0.0, cost_per_char: float = 0.0) -> dict:
+    """C5: score lift minus the added latency/token cost WARM pays for recall.
+
+    Cost weights are opt-in (default 0.0 = ignore) since $/token and $/second
+    depend on the live model pricing the caller is benchmarking against.
+    """
+    result = lift(warm, cold)
+    added_latency = warm.mean_duration_s - cold.mean_duration_s
+    added_chars = warm.mean_lesson_chars - cold.mean_lesson_chars
+    cost = cost_per_second * added_latency + cost_per_char * added_chars
+    result["added_latency_s"] = added_latency
+    result["added_lesson_chars"] = added_chars
+    result["net_value"] = result["mean_score_lift"] - cost
+    return result
 
 
 def _write_log(report: Report, path: Path) -> None:

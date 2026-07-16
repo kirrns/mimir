@@ -3,6 +3,8 @@
 Uses InMemoryLessonStore (token-free, no lancedb) since prefetch only needs
 `.active()` — the same duck-type recall() already works against.
 """
+import pytest
+
 from mimir.hermes_memory import MimirMemoryProvider
 from mimir.models import ACTIVE, Lesson
 from mimir.store import InMemoryLessonStore
@@ -15,7 +17,8 @@ def _store_with(rule: str, confidence: float = 0.9) -> InMemoryLessonStore:
     return store
 
 
-def test_is_available_reflects_cognee_and_lancedb_importability():
+@pytest.mark.slow
+def test_is_available_reflects_lancedb_importability():
     provider = MimirMemoryProvider()
     assert isinstance(provider.is_available(), bool)  # environment-dependent; just must not raise
 

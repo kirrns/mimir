@@ -174,3 +174,129 @@ def test_circuit_breaker_skips_protected_lessons():
 
     assert quarantined == []
     assert store.get(bad_protected).status == "active"
+
+
+# --- RESOLVE / FR4 adoption tracking (build_adoptions) -----------------------
+
+def test_build_adoptions_marks_recalled_lessons_adopted():
+    records = [
+        {"task_id": "t1", "score": 1.0, "lesson_ids": ["L1"]},
+        {"task_id": "t2", "score": 0.0, "lesson_ids": []},
+    ]
+
+    observations = C.build_adoptions(records, active_ids=["L1"])
+
+    assert observations["L1"] == [
+        C.Adoption(adopted=True, outcome_score=1.0),
+        C.Adoption(adopted=False, outcome_score=0.0),
+    ]
+
+
+def test_build_adoptions_covers_every_active_lesson_per_task():
+    # every currently-active lesson is a candidate for every task; a lesson not
+    # recalled for a given task is still a data point (adopted=False, that task's score)
+    records = [{"task_id": "t1", "score": 1.0, "lesson_ids": ["L1"]}]
+
+    observations = C.build_adoptions(records, active_ids=["L1", "L2"])
+
+    assert observations["L1"] == [C.Adoption(adopted=True, outcome_score=1.0)]
+    assert observations["L2"] == [C.Adoption(adopted=False, outcome_score=1.0)]
+
+
+def test_build_adoptions_feeds_circuit_breaker_end_to_end():
+    store = InMemoryLessonStore()
+    bad = store.add(Lesson(rule="always force-push to fix conflicts"))
+    good = store.add(Lesson(rule="rebase then test"))
+    records = [
+        {"task_id": "t1", "score": 0.0, "lesson_ids": [bad]},
+        {"task_id": "t2", "score": 0.0, "lesson_ids": [bad]},
+        {"task_id": "t3", "score": 1.0, "lesson_ids": [good]},
+    ]
+
+    observations = C.build_adoptions(records, active_ids=[bad, good])
+    quarantined = C.circuit_breaker_sweep(store, observations)
+
+    assert quarantined == [bad]
+    assert {lo.id for lo in store.active()} == {good}
+
+
+def test_sweep_episodes_quarantines_from_the_real_capture_log():
+    """The live-path counterpart to bench.loop.sweep_regressions (#1 follow-up): FR4
+    built from real EPISODEs (outcome_score + recalled_lesson_ids), not a bench Report."""
+    store = InMemoryLessonStore()
+    bad = store.add(Lesson(rule="always force-push to fix conflicts"))
+    good = store.add(Lesson(rule="rebase then test"))
+    episodes = [
+        Episode(action="fix", context="c1", consequence="broke it", outcome_score=0.0,
+                recalled_lesson_ids=[bad], id="E1"),
+        Episode(action="fix", context="c2", consequence="broke it too", outcome_score=0.0,
+                recalled_lesson_ids=[bad], id="E2"),
+        Episode(action="fix", context="c3", consequence="worked", outcome_score=1.0,
+                recalled_lesson_ids=[good], id="E3"),
+    ]
+
+    quarantined = C.sweep_episodes(store, episodes)
+
+    assert quarantined == [bad]
+    assert {lo.id for lo in store.active()} == {good}
+
+
+# --- C5 quality-gate metrics: contradiction/stale rate + quarantine events ---
+
+def test_quality_gate_report_on_empty_store():
+    store = InMemoryLessonStore()
+    report = C.quality_gate_report(store)
+
+    assert report == {"total_lessons": 0, "contradiction_rate": 0.0,
+                      "stale_lesson_rate": 0.0, "quarantine_events": 0}
+
+
+def test_quality_gate_report_counts_superseded_as_contradiction_and_stale():
+    store = InMemoryLessonStore()
+    old_id = store.add(Lesson(rule="retry on failure"))
+    store.supersede(old_id, Lesson(rule="never retry on failure"))  # 2 lessons total
+
+    report = C.quality_gate_report(store)
+
+    assert report["total_lessons"] == 2
+    assert report["contradiction_rate"] == 0.5   # 1 superseded / 2 total
+    assert report["stale_lesson_rate"] == 0.5     # superseded counts as stale too
+    assert report["quarantine_events"] == 0
+
+
+def test_quality_gate_report_counts_quarantine_separately_from_stale():
+    store = InMemoryLessonStore()
+    bad = store.add(Lesson(rule="always force-push"))
+    store.add(Lesson(rule="rebase then test"))
+    C.circuit_breaker_sweep(store, {bad: [C.Adoption(adopted=True, outcome_score=0.0),
+                                          C.Adoption(adopted=False, outcome_score=1.0)]})
+
+    report = C.quality_gate_report(store)
+
+    assert report["total_lessons"] == 2
+    assert report["quarantine_events"] == 1
+    assert report["stale_lesson_rate"] == 0.0    # quarantined is tracked separately, not "stale"
+    assert report["contradiction_rate"] == 0.0
+
+
+def test_quality_gate_report_counts_retired_as_stale_not_contradiction():
+    store = InMemoryLessonStore()
+    lid = store.add(Lesson(rule="use the old flag"))
+    store.retire(lid)
+
+    report = C.quality_gate_report(store)
+
+    assert report["stale_lesson_rate"] == 1.0
+    assert report["contradiction_rate"] == 0.0
+
+
+def test_sweep_episodes_ignores_episodes_with_no_recorded_outcome():
+    store = InMemoryLessonStore()
+    lid = store.add(Lesson(rule="rebase then test"))
+    episodes = [Episode(action="fix", context="c", consequence="?", outcome_score=None,
+                        recalled_lesson_ids=[lid], id="E1")]
+
+    quarantined = C.sweep_episodes(store, episodes)
+
+    assert quarantined == []
+    assert store.get(lid).status == "active"

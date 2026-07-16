@@ -6,7 +6,7 @@ Install (no git repo required — a local copy works):
 
 Then set `memory.provider: mimir` in Hermes' config.yaml. `mimir` must be
 importable in the same Python environment Hermes runs in (pip install
-'mimir[cognee]'). Only one memory provider is active at a time in Hermes —
+'mimir[mcp]'). Only one memory provider is active at a time in Hermes —
 this replaces whatever provider was configured before it.
 """
 from __future__ import annotations

@@ -7,7 +7,7 @@ Installed by `pip install mimir`:
     mimir consolidate            # slow path (C2): turn logged failure EPISODEs into
                                  #   gated LESSONs and persist them (needs a live judge)
     mimir-serve                  # serve the MCP tool surface over stdio, backed by
-                                 #   the Cognee/LanceDB LESSON store (pip install 'mimir[mcp,cognee]')
+                                 #   the LanceDB LESSON store (pip install 'mimir[mcp]')
     mimir export --digest        # print active lessons as a markdown digest to stdout
     mimir install-hook           # register mimir-hook into ~/.claude/settings.json
                                  #   (idempotent, backs up the old file)
@@ -40,6 +40,7 @@ DEFAULT_SETTINGS = Path.home() / ".claude" / "settings.json"
 HOOK_COMMAND = "mimir-hook"
 HOOK_EVENTS = ("PostToolUse", "SessionEnd")
 CITATION_KEY_ENV = "MIMIR_CITATION_KEY"
+EMBED_MODEL_ENV = "MIMIR_EMBED_MODEL"   # opt-in real semantic embedder (fastembed model name)
 
 # Cline has no settings.json to merge into — it picks up an executable script named after
 # the hook event from this directory (global scope; see docs.cline.bot/features/hooks).
@@ -54,6 +55,17 @@ def _log_path() -> Path:
 
 def _citation_key() -> str:
     return os.environ.get(CITATION_KEY_ENV, "mimir-dev")  # HMAC key for FR7 citations
+
+
+def _embed_fn():
+    """None -> LanceDBVectorIndex's own hash_embed default (zero deps, unchanged
+    behaviour). Set MIMIR_EMBED_MODEL (e.g. 'BAAI/bge-small-en-v1.5') to opt into
+    real local semantic embeddings via fastembed (pip install 'mimir[embed]')."""
+    model_name = os.environ.get(EMBED_MODEL_ENV)
+    if not model_name:
+        return None
+    from mimir.store_cognee import fastembed_embed
+    return lambda texts: fastembed_embed(texts, model_name=model_name)
 
 
 # ---- store persistence (LESSON objects on disk; vectors rebuilt on load) ----
@@ -85,12 +97,14 @@ def save_lessons(store, path: Path) -> None:
 
 
 def build_store(*, lance_url: Optional[Path] = None, lessons_path: Optional[Path] = None):
-    """The served/consolidated store: Cognee's LanceDB vector engine + persisted lessons."""
+    """The served/consolidated store: LanceDB vector engine + persisted lessons."""
     from mimir.store_cognee import CogneeLessonStore, LanceDBVectorIndex
 
     lance_url = lance_url or DEFAULT_LANCE          # resolved at call time, not frozen at import
     lessons_path = lessons_path or DEFAULT_LESSONS
-    store = CogneeLessonStore(index=LanceDBVectorIndex(url=str(lance_url)))
+    embed = _embed_fn()
+    index_kwargs = {"embed": embed} if embed is not None else {}
+    store = CogneeLessonStore(index=LanceDBVectorIndex(url=str(lance_url), **index_kwargs))
     load_lessons(store, lessons_path)
     return store
 
@@ -200,7 +214,9 @@ def install_cline_hook(hooks_dir: Path = DEFAULT_CLINE_HOOKS_DIR, *,
     file (nothing to merge, unlike Claude Code's settings.json), so this just overwrites."""
     hooks_dir.mkdir(parents=True, exist_ok=True)
     script_path = hooks_dir / CLINE_HOOK_NAME
-    script_path.write_text(cline_hook_script(command), encoding="utf-8")
+    # newline="\n": the shebang line must stay LF-only even when written on Windows,
+    # or a POSIX `sh` fails to resolve "/usr/bin/env sh\r" (bad-interpreter error).
+    script_path.write_text(cline_hook_script(command), encoding="utf-8", newline="\n")
     try:
         script_path.chmod(script_path.stat().st_mode | 0o111)
     except OSError:
@@ -210,13 +226,28 @@ def install_cline_hook(hooks_dir: Path = DEFAULT_CLINE_HOOKS_DIR, *,
 
 # ---- entry points ----------------------------------------------------------
 
+def _ensure_utf8_stdio() -> None:
+    """Windows terminals often default to a legacy codepage (e.g. cp1252) that can't
+    encode the em-dashes used throughout Mimir's CLI text, mangling output into
+    mojibake on the very first run. Reconfigure once per entry point instead of
+    avoiding non-ASCII in every print()."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8")
+            except (ValueError, OSError):
+                pass  # non-reconfigurable stream (e.g. redirected to a pipe); leave as-is
+
+
 def hook_main(argv: Optional[list] = None) -> int:
     """`mimir-hook` — what a Claude Code hook invokes. Never raises, always 0."""
+    _ensure_utf8_stdio()
     return run_hook(sys.stdin.read(), log_path=_log_path())
 
 
 def hook_main_cline(argv: Optional[list] = None) -> int:
     """`mimir-hook-cline` — what the Cline PostToolUse hook script invokes."""
+    _ensure_utf8_stdio()
     return run_hook(sys.stdin.read(), log_path=_log_path(), mapper=from_cline_hook)
 
 
@@ -230,7 +261,7 @@ def consolidate_main(argv: Optional[list] = None, *, judge: Optional[Callable] =
     by default (subscription auth, no API key); inject fakes to exercise the wiring
     token-free.
     """
-    from mimir.consolidate import consolidate
+    from mimir.consolidate import consolidate, sweep_episodes
 
     episodes = _episodes_from_log(_log_path())
     if not episodes:
@@ -261,20 +292,29 @@ def consolidate_main(argv: Optional[list] = None, *, judge: Optional[Callable] =
 
     before = len(store.active())
     admitted = consolidate(episodes, store, judge=judge, probe=probe, key=_citation_key())
+
+    # FR4: sweep the full log (not just failures) for lessons whose real-world adoption
+    # correlates with regressions -- catches what ADMIT's ε-gate can't (it only sees the
+    # probe set at write time, not how the lesson performs once actually used later).
+    all_episodes = _episodes_from_log(_log_path(), failures_only=False)
+    quarantined = sweep_episodes(store, all_episodes)
+
     save_lessons(store, DEFAULT_LESSONS)
     print(f"consolidated {total} failure episodes -> {len(admitted)} new lesson(s); "
+          f"{len(quarantined)} lesson(s) quarantined by the FR4 circuit breaker; "
           f"store now {len(store.active())} active (was {before}); saved {DEFAULT_LESSONS}")
     return 0
 
 
 def serve_main(argv: Optional[list] = None) -> int:
-    """`mimir-serve` — serve the MCP tool surface over stdio, on the Cognee/LanceDB store."""
+    """`mimir-serve` — serve the MCP tool surface over stdio, on the LanceDB store."""
+    _ensure_utf8_stdio()
     from mimir.serve import build_server
     try:
         store = build_store()
         server = build_server(store, log_path=_log_path())
     except ImportError as exc:
-        print(f"mimir-serve needs the serve deps: pip install 'mimir[mcp,cognee]' ({exc})",
+        print(f"mimir-serve needs the serve deps: pip install 'mimir[mcp]' ({exc})",
               file=sys.stderr)
         return 1
     print(f"mimir-serve: {len(store.active())} active lessons loaded from {DEFAULT_LESSONS}",
@@ -304,7 +344,7 @@ def export_main(argv: Optional[list] = None) -> int:
     try:
         store = build_store()
     except ImportError as exc:
-        print(f"mimir export needs the serve deps: pip install 'mimir[mcp,cognee]' ({exc})",
+        print(f"mimir export needs the serve deps: pip install 'mimir[mcp]' ({exc})",
               file=sys.stderr)
         return 1
     print(render_digest(store.active()))
@@ -313,6 +353,7 @@ def export_main(argv: Optional[list] = None) -> int:
 
 def main(argv: Optional[list] = None) -> int:
     """`mimir` — top-level dispatcher."""
+    _ensure_utf8_stdio()
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         print(__doc__)

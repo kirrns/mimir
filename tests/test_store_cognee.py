@@ -2,21 +2,11 @@
 
 - the store keeps the InMemory bi-temporal contract (supersede/rollback/active)
 - semantic_recall ranks ACTIVE lessons by vector similarity and respects the gate
-- the cognee/LanceDB index is smoke-tested only where its async write completes
-  (a watchdog skips it instead of hanging the suite — LanceDB 0.33 hangs on
-  Python 3.14 / Windows)
 """
-import threading
-
 import pytest
 
 from mimir.models import Lesson
-from mimir.store_cognee import (
-    CogneeLessonStore,
-    InProcessVectorIndex,
-    hash_embed,
-    lesson_uuid,
-)
+from mimir.store_cognee import CogneeLessonStore, InProcessVectorIndex, hash_embed
 
 
 def _lesson(rule, confidence=0.7, **kw):
@@ -65,16 +55,46 @@ def test_semantic_recall_excludes_superseded_even_if_indexed():
     assert "L-new" in ids
 
 
-def test_lesson_uuid_is_stable_and_distinct():
-    assert lesson_uuid("L1") == lesson_uuid("L1")
-    assert lesson_uuid("L1") != lesson_uuid("L2")
-
-
 def test_hash_embed_is_unit_and_deterministic():
     a, b = hash_embed(["flush the buffer"]), hash_embed(["flush the buffer"])
     assert a == b
     import math
     assert abs(math.sqrt(sum(x * x for x in a[0])) - 1.0) < 1e-9
+
+
+# --- fastembed: opt-in real local semantic embedder --------------------------
+
+def test_fastembed_embed_normalizes_output_via_injected_model():
+    """Pure logic test, no real model: fastembed_embed must unit-normalize whatever
+    the model returns, since fastembed doesn't guarantee it and the Embed contract
+    (unit vectors -> cosine metric) requires it."""
+    import math
+
+    from mimir.store_cognee import fastembed_embed
+
+    class _FakeModel:
+        def __init__(self, model_name):
+            self.model_name = model_name
+
+        def embed(self, texts):
+            return [[3.0, 4.0] for _ in texts]  # 3-4-5 triangle, not unit length
+
+    vecs = fastembed_embed(["a", "b"], model_name="fake-model", _model_cls=_FakeModel)
+    assert vecs == [[0.6, 0.8], [0.6, 0.8]]
+    for v in vecs:
+        assert abs(math.sqrt(sum(x * x for x in v)) - 1.0) < 1e-9
+
+
+@pytest.mark.slow
+def test_fastembed_embed_live_or_skip():
+    pytest.importorskip("fastembed")
+    import math
+
+    from mimir.store_cognee import fastembed_embed
+
+    vecs = fastembed_embed(["flush the buffer before reading"])
+    assert len(vecs) == 1
+    assert abs(math.sqrt(sum(x * x for x in vecs[0])) - 1.0) < 1e-6
 
 
 def test_injected_index_is_used():
@@ -128,30 +148,3 @@ def test_lancedb_backed_store_keeps_gate(tmp_path):
     store.supersede(old, _lesson("call sync True flush is not enough for the buffer", id="L-new"))
     ids = {h.id for h in store.semantic_recall("flush the buffer", k=5)}
     assert "L-old" not in ids and "L-new" in ids     # gate authoritative over live index
-
-
-# --- live cognee full adapter, self-skipping so its async hang never blocks -----
-
-def test_cognee_vector_index_live_or_skip(tmp_path):
-    pytest.importorskip("cognee")
-    from mimir.store_cognee import CogneeVectorIndex
-
-    result: dict = {}
-
-    def _run():
-        try:
-            idx = CogneeVectorIndex(url=str(tmp_path / "lance.db"))
-            idx.upsert("L-flush", "flush the buffer before reading or the read is empty")
-            idx.upsert("L-unit", "the timer schedule argument is milliseconds not seconds")
-            result["hits"] = idx.query("read is empty, need to flush", k=2)
-        except Exception as exc:  # noqa: BLE001 - report, don't fail the suite on env issues
-            result["error"] = repr(exc)
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    t.join(timeout=25)
-    if t.is_alive():
-        pytest.skip("LanceDB async write hangs on this platform (Py3.14/Windows)")
-    if "error" in result:
-        pytest.skip(f"cognee backend unavailable here: {result['error']}")
-    assert result["hits"] and result["hits"][0][0] == "L-flush"

@@ -1,46 +1,35 @@
-"""C3 backend — semantic LESSON recall over a vector index, Cognee-backed.
+"""C3 backend — semantic LESSON recall over a vector index.
 
-The spec (BUILD_SPEC C3) puts the store behind a thin swappable interface and
-names Cognee (Kuzu graph + LanceDB vector) as the backend. This module delivers
-the vector half: a `CogneeLessonStore` that keeps the proven bi-temporal CRUD
-(inherited from InMemoryLessonStore, so every C3 contract test still holds) and
-adds `semantic_recall` over a pluggable `VectorIndex`.
+A `CogneeLessonStore` that keeps the proven bi-temporal CRUD (inherited from
+InMemoryLessonStore, so every C3 contract test still holds) and adds
+`semantic_recall` over a pluggable `VectorIndex`.
 
-Three indexes implement the same seam:
-  - `LanceDBVectorIndex`  — LanceDB (Cognee's own vector engine) via its sync API;
-    a real on-disk vector DB that runs live on this box.
-  - `CogneeVectorIndex`   — cognee's full LanceDBAdapter (async graph+vector DB);
-    code-complete but its async writer hangs on Py3.14/Windows (see note below).
+Two indexes implement the same seam:
+  - `LanceDBVectorIndex`   — real on-disk vector DB (LanceDB direct, sync API).
   - `InProcessVectorIndex` — a pure-Python cosine index, zero deps, never blocks.
+
+(A third, `CogneeVectorIndex`, went through cognee's own async LanceDB adapter
+instead of talking to LanceDB directly; removed — its async writer hung on
+Py3.14/Windows, it was never wired into the live path (`build_store()` always
+used `LanceDBVectorIndex`), and it added a heavy import + a whole optional
+dependency for zero behavioural difference from the index above.)
 
 The embedding function is injected (the same DI pattern as the live judge/probe/
 CLI runner): a hash embedder for tests (no key, no download, deterministic), a
-real model for a live demo. So semantic recall runs and is testable token-free,
-and Cognee slots in wherever its native async cooperates.
+real model for a live demo. So semantic recall runs and is testable token-free.
 
 ponytail: default index is in-process (zero deps, never blocks). For a live vector
-DB on this box, pass `LanceDBVectorIndex(url=...)` — LanceDB's sync writer works
-fine here; only cognee's async adapter (`CogneeVectorIndex`) hangs on Py3.14/Windows.
-All three share one seam, so the backend is a constructor arg, not a rewrite.
+DB on this box, pass `LanceDBVectorIndex(url=...)`. Both share one seam, so the
+backend is a constructor arg, not a rewrite.
 """
 from __future__ import annotations
 
 import hashlib
 import math
-import uuid
 from typing import Callable, Optional, Protocol
 
 from mimir.models import Lesson
 from mimir.store import InMemoryLessonStore
-
-# Deterministic namespace so lesson-id -> vector-store UUID is stable across runs
-# (cognee DataPoint.id must be a UUID; our lesson ids are arbitrary strings).
-_NS = uuid.UUID("6d696d69-7200-0000-0000-000000000001")
-
-
-def lesson_uuid(lesson_id: str) -> uuid.UUID:
-    return uuid.uuid5(_NS, lesson_id)
-
 
 # --- embedding (injectable) --------------------------------------------------
 
@@ -53,7 +42,7 @@ def hash_embed(texts: list[str], *, dim: int = _DIM) -> list[list[float]]:
 
     Good enough for tests and a zero-dependency demo — shared vocabulary between a
     query and a lesson lands them near each other in cosine space. Swap for a real
-    sentence embedder (or cognee's engine) via the `embed` arg for production recall.
+    sentence embedder via the `embed` arg for production recall.
     """
     vecs: list[list[float]] = []
     for text in texts:
@@ -64,6 +53,29 @@ def hash_embed(texts: list[str], *, dim: int = _DIM) -> list[list[float]]:
         norm = math.sqrt(sum(x * x for x in v)) or 1.0
         vecs.append([x / norm for x in v])
     return vecs
+
+
+def _unit(v: list[float]) -> list[float]:
+    norm = math.sqrt(sum(x * x for x in v)) or 1.0
+    return [x / norm for x in v]
+
+
+DEFAULT_FASTEMBED_MODEL = "BAAI/bge-small-en-v1.5"
+
+
+def fastembed_embed(texts: list[str], *, model_name: str = DEFAULT_FASTEMBED_MODEL,
+                    _model_cls: Optional[type] = None) -> list[list[float]]:
+    """Real local semantic embedder (ONNX via fastembed — no torch, no network after
+    the first model download). Opt-in: `pip install 'mimir[embed]'` and set
+    MIMIR_EMBED_MODEL (see cli.py build_store()); hash_embed stays the zero-dependency
+    default otherwise. Output is unit-normalized to match hash_embed's contract
+    (`Embed`: unit vectors -> cosine metric), since fastembed doesn't guarantee it.
+    `_model_cls` is a test seam (inject a fake TextEmbedding, no real download).
+    """
+    if _model_cls is None:
+        from fastembed import TextEmbedding as _model_cls  # noqa: N812 - lazy, optional dep
+    model = _model_cls(model_name=model_name)
+    return [_unit(list(v)) for v in model.embed(texts)]
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -137,63 +149,6 @@ class LanceDBVectorIndex:
         # cosine distance = 1 - similarity; keep only positive-similarity hits
         out = [(r["lesson_id"], 1.0 - float(r["_distance"])) for r in rows]
         return [(lid, s) for lid, s in out if s > 0.0]
-
-
-class CogneeVectorIndex:
-    """cognee's real LanceDB vector store behind the same seam.
-
-    Lazily imports cognee so the core package stays dependency-free. Runs every
-    call through a private event loop (cognee's adapter is async-first). Use where
-    LanceDB's native async writer works; on platforms where it hangs, use
-    InProcessVectorIndex — both implement VectorIndex identically.
-    """
-
-    COLLECTION = "mimir_lessons"
-
-    def __init__(self, url: str, *, embed: Embed = hash_embed, dim: int = _DIM) -> None:
-        import asyncio
-
-        from cognee.infrastructure.databases.vector.lancedb.LanceDBAdapter import (
-            LanceDBAdapter,
-        )
-        from cognee.infrastructure.engine import DataPoint
-
-        class _Engine:  # duck-typed cognee EmbeddingEngine (only these are called)
-            async def embed_text(self, data: list[str]) -> list[list[float]]:
-                return embed(data)
-
-            def get_vector_size(self) -> int:
-                return dim
-
-            async def get_tokenizer(self):  # pragma: no cover - cognee optional hook
-                return None
-
-        class _LessonPoint(DataPoint):
-            lesson_id: str
-            text: str
-            metadata: dict = {"index_fields": ["text"]}
-
-        self._loop = asyncio.new_event_loop()
-        self._adapter = LanceDBAdapter(url=url, api_key=None, embedding_engine=_Engine())
-        self._Point = _LessonPoint
-
-    def upsert(self, lesson_id: str, text: str) -> None:
-        point = self._Point(id=lesson_uuid(lesson_id), lesson_id=lesson_id, text=text)
-        self._loop.run_until_complete(
-            self._adapter.create_data_points(self.COLLECTION, [point])
-        )
-
-    def query(self, text: str, k: int) -> list[tuple[str, float]]:
-        results = self._loop.run_until_complete(
-            self._adapter.search(self.COLLECTION, query_text=text, limit=k)
-        )
-        out: list[tuple[str, float]] = []
-        for r in results:
-            payload = getattr(r, "payload", None) or {}
-            lid = payload.get("lesson_id")
-            if lid is not None:
-                out.append((lid, float(getattr(r, "score", 0.0))))
-        return out
 
 
 # --- the store ---------------------------------------------------------------
