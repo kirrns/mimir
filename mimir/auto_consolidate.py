@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -64,3 +66,24 @@ def is_due(state_path: Optional[Path] = None, *, threshold: int, cooldown_hours:
         return True
     last_run = datetime.fromisoformat(last_run_ts)
     return datetime.now(timezone.utc) - last_run >= timedelta(hours=cooldown_hours)
+
+
+def _lock_is_stale(lock_path: Path) -> bool:
+    age_seconds = time.time() - lock_path.stat().st_mtime
+    return age_seconds >= LOCK_STALE_HOURS * 3600
+
+
+def _acquire_lock(lock_path: Optional[Path] = None) -> bool:
+    """Atomically create the lock file. True if acquired; False if a fresh lock
+    already exists (a run is in flight). Reclaims a stale lock."""
+    path = lock_path or DEFAULT_LOCK
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        return True
+    except FileExistsError:
+        if _lock_is_stale(path):
+            path.unlink(missing_ok=True)
+            return _acquire_lock(path)
+        return False

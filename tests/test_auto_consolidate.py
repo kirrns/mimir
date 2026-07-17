@@ -3,6 +3,8 @@
 See docs/superpowers/specs/2026-07-17-auto-consolidate-design.md.
 """
 import json
+import os
+import time
 from datetime import datetime, timedelta, timezone
 
 from mimir import auto_consolidate as ac
@@ -59,3 +61,23 @@ def test_is_due_true_when_threshold_met_and_cooldown_elapsed(tmp_path):
     _write_state_file(state_path, failure_count_total=10, failure_count_at_last_run=0,
                       last_run_ts=old)
     assert ac.is_due(state_path, threshold=5, cooldown_hours=4) is True
+
+
+def test_acquire_lock_succeeds_when_absent(tmp_path):
+    lock_path = tmp_path / "lock"
+    assert ac._acquire_lock(lock_path) is True
+    assert lock_path.exists()
+
+
+def test_acquire_lock_fails_when_fresh_lock_exists(tmp_path):
+    lock_path = tmp_path / "lock"
+    lock_path.write_text("", encoding="utf-8")
+    assert ac._acquire_lock(lock_path) is False
+
+
+def test_acquire_lock_reclaims_stale_lock(tmp_path):
+    lock_path = tmp_path / "lock"
+    lock_path.write_text("", encoding="utf-8")
+    stale_time = time.time() - (ac.LOCK_STALE_HOURS * 3600 + 60)
+    os.utime(lock_path, (stale_time, stale_time))
+    assert ac._acquire_lock(lock_path) is True
