@@ -1,0 +1,51 @@
+"""C1.5 -- the auto-trigger gate between capture (C1) and consolidate (C2).
+
+Keeps the "should we consolidate now" check O(1) regardless of episode-log size:
+capture() bumps a small integer counter on every FAIL episode instead of this module
+ever re-scanning episodes.jsonl. See
+docs/superpowers/specs/2026-07-17-auto-consolidate-design.md.
+"""
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+from typing import Optional
+
+log = logging.getLogger("mimir.auto_consolidate")
+
+DEFAULT_STATE = Path.home() / ".mimir" / "auto_consolidate_state.json"
+DEFAULT_LOCK = Path.home() / ".mimir" / "auto_consolidate.lock"
+DEFAULT_WORKER_LOG = Path.home() / ".mimir" / "auto_consolidate.log"
+
+ENABLED_ENV = "MIMIR_AUTO_CONSOLIDATE"
+THRESHOLD_ENV = "MIMIR_AUTO_CONSOLIDATE_THRESHOLD"
+COOLDOWN_ENV = "MIMIR_AUTO_CONSOLIDATE_COOLDOWN_HOURS"
+DEFAULT_THRESHOLD = 5
+DEFAULT_COOLDOWN_HOURS = 4.0
+LOCK_STALE_HOURS = 2.0
+
+
+def _read_state(state_path: Path) -> dict:
+    if not state_path.exists():
+        return {}
+    try:
+        return json.loads(state_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _write_state(state_path: Path, state: dict) -> None:
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+
+def bump_failure_count(state_path: Optional[Path] = None) -> None:
+    """Called by capture() on every FAIL episode. Never raises."""
+    path = state_path or DEFAULT_STATE
+    try:
+        state = _read_state(path)
+        state["failure_count_total"] = state.get("failure_count_total", 0) + 1
+        _write_state(path, state)
+    except Exception:
+        log.exception("mimir auto_consolidate failed to bump failure counter (non-fatal)")
