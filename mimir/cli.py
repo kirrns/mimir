@@ -29,6 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
+from mimir import auto_consolidate
 from mimir.capture import OUTCOME_FAIL, from_cline_hook, run_hook
 from mimir.models import Episode, Lesson
 
@@ -242,13 +243,17 @@ def _ensure_utf8_stdio() -> None:
 def hook_main(argv: Optional[list] = None) -> int:
     """`mimir-hook` — what a Claude Code hook invokes. Never raises, always 0."""
     _ensure_utf8_stdio()
-    return run_hook(sys.stdin.read(), log_path=_log_path())
+    rc = run_hook(sys.stdin.read(), log_path=_log_path())
+    auto_consolidate.maybe_trigger(_log_path())
+    return rc
 
 
 def hook_main_cline(argv: Optional[list] = None) -> int:
     """`mimir-hook-cline` — what the Cline PostToolUse hook script invokes."""
     _ensure_utf8_stdio()
-    return run_hook(sys.stdin.read(), log_path=_log_path(), mapper=from_cline_hook)
+    rc = run_hook(sys.stdin.read(), log_path=_log_path(), mapper=from_cline_hook)
+    auto_consolidate.maybe_trigger(_log_path())
+    return rc
 
 
 def consolidate_main(argv: Optional[list] = None, *, judge: Optional[Callable] = None,

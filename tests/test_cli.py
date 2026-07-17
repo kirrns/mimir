@@ -326,3 +326,28 @@ def test_main_dispatches_export_command(monkeypatch):
     monkeypatch.setattr(cli, "export_main", lambda rest: calls.append(rest) or 0)
     assert cli.main(["export", "--digest"]) == 0
     assert calls == [["--digest"]]
+
+
+import io
+
+
+def test_hook_main_calls_auto_consolidate_maybe_trigger(monkeypatch):
+    import mimir.cli as cli
+
+    calls = []
+    monkeypatch.setattr(cli.auto_consolidate, "maybe_trigger",
+                        lambda log_path: calls.append(log_path))
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(""))
+    assert cli.hook_main() == 0
+    assert calls == [cli._log_path()]
+
+
+def test_hook_main_cline_calls_auto_consolidate_maybe_trigger(monkeypatch):
+    import mimir.cli as cli
+
+    calls = []
+    monkeypatch.setattr(cli.auto_consolidate, "maybe_trigger",
+                        lambda log_path: calls.append(log_path))
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(""))
+    assert cli.hook_main_cline() == 0
+    assert calls == [cli._log_path()]
