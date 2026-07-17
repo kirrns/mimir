@@ -140,3 +140,18 @@ def maybe_trigger(log_path: Path, *, state_path: Optional[Path] = None,
             popen([sys.executable, "-m", "mimir.cli", "_auto-consolidate-worker"], **kwargs)
     except Exception:
         log.exception("mimir auto_consolidate failed to trigger (non-fatal)")
+
+
+def finish_run(state_path: Optional[Path] = None, lock_path: Optional[Path] = None) -> None:
+    """Called by the worker when a run completes, success or failure."""
+    path = state_path or DEFAULT_STATE
+    lpath = lock_path or DEFAULT_LOCK
+    try:
+        state = _read_state(path)
+        state["failure_count_at_last_run"] = state.get("failure_count_total", 0)
+        state["last_run_ts"] = datetime.now(timezone.utc).isoformat()
+        _write_state(path, state)
+    except Exception:
+        log.exception("mimir auto_consolidate failed to update state after run")
+    finally:
+        Path(lpath).unlink(missing_ok=True)

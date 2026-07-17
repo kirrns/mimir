@@ -178,3 +178,27 @@ def test_maybe_trigger_never_raises_even_if_popen_blows_up(tmp_path, monkeypatch
     ac.maybe_trigger(tmp_path / "episodes.jsonl", state_path=state_path,
                      lock_path=tmp_path / "lock", worker_log_path=tmp_path / "worker.log",
                      popen=_boom)  # must not raise
+
+
+def test_finish_run_updates_state_and_releases_lock(tmp_path):
+    state_path = tmp_path / "state.json"
+    lock_path = tmp_path / "lock"
+    lock_path.write_text("", encoding="utf-8")
+    _write_state_file(state_path, failure_count_total=7, failure_count_at_last_run=2)
+
+    ac.finish_run(state_path, lock_path)
+
+    data = json.loads(state_path.read_text(encoding="utf-8"))
+    assert data["failure_count_at_last_run"] == 7
+    assert "last_run_ts" in data
+    assert not lock_path.exists()
+
+
+def test_finish_run_releases_lock_even_if_state_write_fails(tmp_path):
+    lock_path = tmp_path / "lock"
+    lock_path.write_text("", encoding="utf-8")
+    bad_state_path = tmp_path  # a directory -- the write must fail internally
+
+    ac.finish_run(bad_state_path, lock_path)  # must not raise
+
+    assert not lock_path.exists()
