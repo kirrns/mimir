@@ -45,6 +45,9 @@ Thumbs.db
 .idea/
 .vscode/
 
+# --- Local dev worktrees (subagent-driven-development scratch checkouts) ---
+.worktrees/
+
 # --- SAFETY: research & planning live in the PARENT dir and must NEVER enter this repo.
 # This repo root is the only thing tracked. Do not copy PRD.md, ideation.md,
 # *research*, *report*, harness_research_bible.md, or any Docs/ here.
