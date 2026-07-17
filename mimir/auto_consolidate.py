@@ -68,9 +68,18 @@ def is_due(state_path: Optional[Path] = None, *, threshold: int, cooldown_hours:
     return datetime.now(timezone.utc) - last_run >= timedelta(hours=cooldown_hours)
 
 
-def _lock_is_stale(lock_path: Path) -> bool:
-    age_seconds = time.time() - lock_path.stat().st_mtime
-    return age_seconds >= LOCK_STALE_HOURS * 3600
+def _stat_mtime(path: Path) -> Optional[float]:
+    try:
+        return path.stat().st_mtime
+    except FileNotFoundError:
+        return None
+
+
+def _lock_is_stale(lock_path: Path, *, mtime: Optional[float] = None) -> bool:
+    m = mtime if mtime is not None else _stat_mtime(lock_path)
+    if m is None:
+        return False
+    return time.time() - m >= LOCK_STALE_HOURS * 3600
 
 
 def _acquire_lock(lock_path: Optional[Path] = None) -> bool:
@@ -83,7 +92,21 @@ def _acquire_lock(lock_path: Optional[Path] = None) -> bool:
         os.close(fd)
         return True
     except FileExistsError:
-        if _lock_is_stale(path):
-            path.unlink(missing_ok=True)
-            return _acquire_lock(path)
-        return False
+        observed_mtime = _stat_mtime(path)
+        if observed_mtime is None:
+            return _acquire_lock(path)  # vanished between open() and stat(); retry
+        if not _lock_is_stale(path, mtime=observed_mtime):
+            return False  # fresh lock: a run is genuinely in flight
+        # Re-check immediately before unlinking: if another process already
+        # reclaimed this lock (mtime moved since we judged it stale), back off
+        # instead of deleting its fresh lock. Narrows the reclaim TOCTOU window
+        # to this final stat vs. the unlink call; true elimination needs
+        # platform-specific locking (flock/msvcrt), not justified for a
+        # single-developer local background trigger.
+        if _stat_mtime(path) != observed_mtime:
+            return False
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass  # already gone; fall through to retry the create
+        return _acquire_lock(path)

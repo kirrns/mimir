@@ -81,3 +81,19 @@ def test_acquire_lock_reclaims_stale_lock(tmp_path):
     stale_time = time.time() - (ac.LOCK_STALE_HOURS * 3600 + 60)
     os.utime(lock_path, (stale_time, stale_time))
     assert ac._acquire_lock(lock_path) is True
+
+
+def test_acquire_lock_backs_off_if_lock_refreshed_during_reclaim(tmp_path, monkeypatch):
+    """Simulates two processes racing to reclaim the same stale lock: if the
+    lock's mtime changes between the staleness check and the unlink, back off
+    instead of stomping the other process's fresh lock."""
+    lock_path = tmp_path / "lock"
+    lock_path.write_text("", encoding="utf-8")
+    stale_time = time.time() - (ac.LOCK_STALE_HOURS * 3600 + 60)
+    fresh_time = time.time()
+
+    mtimes = iter([stale_time, fresh_time])
+    monkeypatch.setattr(ac, "_stat_mtime", lambda path: next(mtimes))
+
+    assert ac._acquire_lock(lock_path) is False
+    assert lock_path.exists()  # not stomped -- still the original file
