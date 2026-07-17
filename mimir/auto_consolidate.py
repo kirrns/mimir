@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -49,3 +50,17 @@ def bump_failure_count(state_path: Optional[Path] = None) -> None:
         _write_state(path, state)
     except Exception:
         log.exception("mimir auto_consolidate failed to bump failure counter (non-fatal)")
+
+
+def is_due(state_path: Optional[Path] = None, *, threshold: int, cooldown_hours: float) -> bool:
+    path = state_path or DEFAULT_STATE
+    state = _read_state(path)
+    total = state.get("failure_count_total", 0)
+    at_last_run = state.get("failure_count_at_last_run", 0)
+    if total - at_last_run < threshold:
+        return False
+    last_run_ts = state.get("last_run_ts")
+    if last_run_ts is None:
+        return True
+    last_run = datetime.fromisoformat(last_run_ts)
+    return datetime.now(timezone.utc) - last_run >= timedelta(hours=cooldown_hours)
