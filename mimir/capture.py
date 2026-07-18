@@ -105,18 +105,22 @@ def from_config_hook(config: dict) -> Callable[[dict], Episode]:
     JSON, not Python -- same Callable[[dict], Episode] contract as from_cline_hook etc."""
     fail_values = config.get("fail_values", [])
 
+    def _default_empty(event: dict, path: str) -> str:
+        value = _resolve_path(event, path)
+        return value if value is not None else ""
+
     def mapper(event: dict) -> Episode:
         outcome_value = _resolve_path(event, config.get("outcome_path", ""))
         failed = outcome_value in fail_values
         return Episode(
-            action=_resolve_path(event, config.get("action_path", "")) or "",
+            action=_default_empty(event, config.get("action_path", "")),
             context=json.dumps(
                 _resolve_path(event, config.get("context_path", "")), default=str),
             consequence=json.dumps(
                 _resolve_path(event, config.get("consequence_path", "")), default=str),
             outcome_score=OUTCOME_FAIL if failed else OUTCOME_PASS,
-            session_id=_resolve_path(event, config.get("session_id_path", "")) or "",
-            task_id=_resolve_path(event, config.get("task_id_path", "")) or "",
+            session_id=_default_empty(event, config.get("session_id_path", "")),
+            task_id=_default_empty(event, config.get("task_id_path", "")),
         )
     return mapper
 

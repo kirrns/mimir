@@ -233,3 +233,10 @@ def test_from_config_hook_fail_values_matches_string_status():
     mapper = from_config_hook(config)
     assert mapper({"status": "failed"}).outcome_score == OUTCOME_FAIL
     assert mapper({"status": "ok"}).outcome_score == OUTCOME_PASS
+
+
+def test_from_config_hook_preserves_resolved_falsy_values():
+    config = {"task_id_path": "task_id"}
+    mapper = from_config_hook(config)
+    ep = mapper({"task_id": 0})
+    assert ep.task_id == 0
