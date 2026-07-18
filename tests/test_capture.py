@@ -162,3 +162,74 @@ def test_capture_does_not_bump_counter_on_pass_episode(tmp_path):
     state_path = tmp_path / "state.json"
     capture(_episode(outcome_score=1.0), log_path=log, state_path=state_path)
     assert not state_path.exists()
+
+
+# --- Generic hook adapter: declarative config-driven mapper for arbitrary tools ---
+
+from mimir.capture import _resolve_path, from_config_hook
+
+
+def test_resolve_path_finds_nested_value():
+    assert _resolve_path({"result": {"status": "error"}}, "result.status") == "error"
+
+
+def test_resolve_path_returns_none_for_missing_key():
+    assert _resolve_path({"result": {}}, "result.status") is None
+
+
+def test_resolve_path_returns_none_through_non_dict_intermediate():
+    assert _resolve_path({"result": "not a dict"}, "result.status") is None
+
+
+def test_resolve_path_returns_none_for_empty_path():
+    assert _resolve_path({"result": {"status": "error"}}, "") is None
+
+
+def test_from_config_hook_maps_full_config():
+    config = {
+        "action_path": "tool_name",
+        "context_path": "input",
+        "consequence_path": "result",
+        "session_id_path": "session.id",
+        "task_id_path": "task.id",
+        "outcome_path": "result.status",
+        "fail_values": ["error"],
+    }
+    mapper = from_config_hook(config)
+    event = {
+        "tool_name": "foo.run",
+        "input": {"cmd": "build"},
+        "result": {"status": "error", "message": "boom"},
+        "session": {"id": "s1"},
+        "task": {"id": "t1"},
+    }
+    ep = mapper(event)
+    assert ep.action == "foo.run"
+    assert json.loads(ep.context) == {"cmd": "build"}
+    assert json.loads(ep.consequence) == {"status": "error", "message": "boom"}
+    assert ep.session_id == "s1"
+    assert ep.task_id == "t1"
+    assert ep.outcome_score == OUTCOME_FAIL
+
+
+def test_from_config_hook_defaults_missing_paths_to_empty_string():
+    mapper = from_config_hook({})
+    ep = mapper({"anything": "here"})
+    assert ep.action == ""
+    assert ep.session_id == ""
+    assert ep.task_id == ""
+    assert ep.outcome_score == OUTCOME_PASS  # unresolved outcome_path -> None -> not in [] -> PASS
+
+
+def test_from_config_hook_fail_values_matches_boolean_false():
+    config = {"outcome_path": "ok", "fail_values": [False]}
+    mapper = from_config_hook(config)
+    assert mapper({"ok": False}).outcome_score == OUTCOME_FAIL
+    assert mapper({"ok": True}).outcome_score == OUTCOME_PASS
+
+
+def test_from_config_hook_fail_values_matches_string_status():
+    config = {"outcome_path": "status", "fail_values": ["error", "failed"]}
+    mapper = from_config_hook(config)
+    assert mapper({"status": "failed"}).outcome_score == OUTCOME_FAIL
+    assert mapper({"status": "ok"}).outcome_score == OUTCOME_PASS

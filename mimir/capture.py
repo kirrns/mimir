@@ -86,6 +86,41 @@ def from_hermes_call(tool_name: str, params, result) -> Episode:
     )
 
 
+def _resolve_path(data: dict, path: str):
+    """Dotted-path lookup into a nested dict (e.g. "result.status"). None if the path
+    is empty, or any segment along the way is missing or not itself a dict."""
+    if not path:
+        return None
+    node = data
+    for key in path.split("."):
+        if not isinstance(node, dict) or key not in node:
+            return None
+        node = node[key]
+    return node
+
+
+def from_config_hook(config: dict) -> Callable[[dict], Episode]:
+    """Build a mapper for an arbitrary tool's hook payload from a declarative field-mapping
+    config (see docs/integrations/generic.md). Lets a user plug in a new tool by writing
+    JSON, not Python -- same Callable[[dict], Episode] contract as from_cline_hook etc."""
+    fail_values = config.get("fail_values", [])
+
+    def mapper(event: dict) -> Episode:
+        outcome_value = _resolve_path(event, config.get("outcome_path", ""))
+        failed = outcome_value in fail_values
+        return Episode(
+            action=_resolve_path(event, config.get("action_path", "")) or "",
+            context=json.dumps(
+                _resolve_path(event, config.get("context_path", "")), default=str),
+            consequence=json.dumps(
+                _resolve_path(event, config.get("consequence_path", "")), default=str),
+            outcome_score=OUTCOME_FAIL if failed else OUTCOME_PASS,
+            session_id=_resolve_path(event, config.get("session_id_path", "")) or "",
+            task_id=_resolve_path(event, config.get("task_id_path", "")) or "",
+        )
+    return mapper
+
+
 def capture(episode: Episode, *, log_path: Path,
            state_path: Optional[Path] = None) -> Optional[str]:
     """Append one EPISODE to the append-only JSONL log. Returns its id, or None on failure."""
