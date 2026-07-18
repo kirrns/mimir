@@ -122,3 +122,80 @@ def test_run_live_repeated_aggregates_arms_with_band():
     assert r["cold"]["mean"] == 0.0
     assert r["naive"]["mean"] == 0.0
     assert r["lift_mean"] == 1.0
+
+
+# --- MIMIR_BENCH_WORKERS -> concurrency knob for demo()/demo_band() ----------------
+
+def test_worker_count_defaults_to_three_when_env_unset(monkeypatch):
+    monkeypatch.delenv("MIMIR_BENCH_WORKERS", raising=False)
+    assert live._worker_count() == 3
+
+
+def test_worker_count_reads_env_var(monkeypatch):
+    monkeypatch.setenv("MIMIR_BENCH_WORKERS", "5")
+    assert live._worker_count() == 5
+
+
+def test_worker_count_one_restores_sequential_default(monkeypatch):
+    monkeypatch.setenv("MIMIR_BENCH_WORKERS", "1")
+    assert live._worker_count() == 1
+
+
+# --- max_workers passthrough: run_live / run_live_repeated forward it to run() -----
+
+def test_run_live_forwards_max_workers_to_run(monkeypatch):
+    calls = []
+    real_run = live.run
+
+    def spy_run(*args, **kwargs):
+        calls.append(kwargs.get("max_workers"))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(live, "run", spy_run)
+    store = InMemoryLessonStore()
+    live.seed_poison(store, live.TASKS)
+    solver = lambda payload, lessons: live.cli_solver(
+        payload, lessons, _runner=_fake_runner_for(payload))
+
+    live.run_live(store, live.TASKS, key="t", solver=solver, max_workers=5)
+
+    assert calls == [5, 5, 5]  # cold, naive, warm each forwarded max_workers
+
+
+def test_run_live_repeated_forwards_max_workers(monkeypatch):
+    calls = []
+    real_run = live.run
+
+    def spy_run(*args, **kwargs):
+        calls.append(kwargs.get("max_workers"))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(live, "run", spy_run)
+
+    def make_store():
+        s = InMemoryLessonStore()
+        live.seed_poison(s, live.TASKS)
+        return s
+
+    solver = lambda payload, lessons: live.cli_solver(
+        payload, lessons, _runner=_fake_runner_for(payload))
+    live.run_live_repeated(make_store, live.TASKS, key="t", repeats=2, solver=solver,
+                           max_workers=2)
+
+    assert calls == [2] * 6  # 3 arms x 2 repeats
+
+
+# --- cost/latency metrics surfaced from run_live_repeated --------------------------
+
+def test_run_live_repeated_reports_added_latency_mean():
+    def make_store():
+        s = InMemoryLessonStore()
+        live.seed_poison(s, live.TASKS)
+        return s
+
+    solver = lambda payload, lessons: live.cli_solver(
+        payload, lessons, _runner=_fake_runner_for(payload))
+    r = live.run_live_repeated(make_store, live.TASKS, key="t", repeats=2, solver=solver)
+
+    assert "added_latency_mean_s" in r
+    assert isinstance(r["added_latency_mean_s"], float)

@@ -13,12 +13,13 @@ real benchmark sets in a container if you don't trust the output.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from statistics import mean
 from typing import Callable, Optional
 
 from bench.claude_cli import extract_code, run_claude
-from bench.harness import COLD, COLD_NAIVE, WARM, Report, lift, run
+from bench.harness import COLD, COLD_NAIVE, WARM, Report, lift, net_value, run
 from mimir.mcp_server import recall
 from mimir.models import QUARANTINED, Lesson
 from mimir.store import InMemoryLessonStore
@@ -178,18 +179,22 @@ def seed_poison(store: InMemoryLessonStore, tasks: list[CodeTask]) -> None:
 
 def run_live(store: InMemoryLessonStore, tasks: list[CodeTask], *, key: str,
              solver: Optional[Callable] = None, judge: Optional[Callable] = None,
-             probe: Optional[Callable] = None, seed: int = 0
+             probe: Optional[Callable] = None, seed: int = 0,
+             max_workers: Optional[int] = None,
              ) -> tuple[Report, Report, Report]:
     """COLD -> capture -> consolidate -> {naive, WARM} with a live (or injected) solver.
 
     judge/probe default to the deterministic stand-ins (token-free); pass
     make_live_judge()/make_solver_probe() for fully-live consolidation.
+
+    `max_workers` forwards to every harness.run() call below — None (default) is
+    today's exact sequential behavior; see harness.run()'s docstring.
     """
     from mimir.consolidate import consolidate
     from mimir.models import Episode
 
     solve = solver or cli_solver
-    cold = run(tasks, solve, seed=seed, arm=COLD)
+    cold = run(tasks, solve, seed=seed, arm=COLD, max_workers=max_workers)
 
     # Enrich the failure EPISODE with the broken source so a live judge has real material.
     episodes = [Episode(action="attempted fix", context=t.prompt,
@@ -199,9 +204,11 @@ def run_live(store: InMemoryLessonStore, tasks: list[CodeTask], *, key: str,
                 probe=probe or _make_probe(tasks), key=key)
 
     all_lessons = store.all()
-    naive = run(tasks, solve, arm=COLD_NAIVE, recall=lambda t: all_lessons, seed=seed)
+    naive = run(tasks, solve, arm=COLD_NAIVE, recall=lambda t: all_lessons, seed=seed,
+               max_workers=max_workers)
     warm = run(tasks, solve, arm=WARM,
-               recall=lambda t: recall(store, t.prompt).lessons, seed=seed)
+               recall=lambda t: recall(store, t.prompt).lessons, seed=seed,
+               max_workers=max_workers)
     return cold, naive, warm
 
 
@@ -212,6 +219,7 @@ def _band(samples: list[float]) -> dict:
 def run_live_repeated(make_store: Callable[[], InMemoryLessonStore], tasks: list[CodeTask],
                       *, key: str, repeats: int = 3, solver: Optional[Callable] = None,
                       judge: Optional[Callable] = None, probe: Optional[Callable] = None,
+                      max_workers: Optional[int] = None,
                       ) -> dict:
     """Run the COLD/NAIVE/WARM loop `repeats` times on a FRESH store each pass; aggregate.
 
@@ -220,16 +228,22 @@ def run_live_repeated(make_store: Callable[[], InMemoryLessonStore], tasks: list
     independent model samples (the seed pins Python RNG, not the model) and reports each
     arm's mean + (min,max) band — the band IS the honesty: a lift smaller than the band
     is noise. `make_store` rebuilds the poisoned store per pass (consolidate mutates it).
+
+    `added_latency_mean_s` is the C5 net-value latency signal (WARM's extra wall-clock
+    over COLD, averaged across repeats) — the cost half of the lift/cost tradeoff.
     """
-    cold_s, naive_s, warm_s = [], [], []
+    cold_s, naive_s, warm_s, latency_s = [], [], [], []
     for _ in range(repeats):
         cold, naive, warm = run_live(make_store(), tasks, key=key,
-                                     solver=solver, judge=judge, probe=probe)
+                                     solver=solver, judge=judge, probe=probe,
+                                     max_workers=max_workers)
         cold_s.append(cold.success_rate)
         naive_s.append(naive.success_rate)
         warm_s.append(warm.success_rate)
+        latency_s.append(warm.mean_duration_s - cold.mean_duration_s)
     return {"cold": _band(cold_s), "naive": _band(naive_s), "warm": _band(warm_s),
-            "lift_mean": mean(warm_s) - mean(cold_s)}
+            "lift_mean": mean(warm_s) - mean(cold_s),
+            "added_latency_mean_s": mean(latency_s)}
 
 
 def inspect_task(task_id: str = "t-unit") -> None:  # pragma: no cover - one real CLI call
@@ -266,6 +280,16 @@ def inspect_task(task_id: str = "t-unit") -> None:  # pragma: no cover - one rea
     print(f"=== SCORE === {task.verify(code)}  (1.0 = fixed)")
 
 
+def _worker_count(default: int = 3) -> int:
+    """MIMIR_BENCH_WORKERS -> int, defaulting to `default` when unset. The claude CLI
+    runs against your own subscription session, so concurrent calls hit a session-level
+    rate limit (429 / ClaudeLimitError) faster than sequential ones — 3 is a
+    conservative starting point, not a measured optimum. Set to 1 for today's exact
+    sequential behavior."""
+    raw = os.environ.get("MIMIR_BENCH_WORKERS")
+    return int(raw) if raw else default
+
+
 def demo() -> None:  # pragma: no cover - real CLI calls, spends tokens
     # Live SOLVER, but the curated (deterministic) judge supplies the lesson: on these
     # novel-API tasks an equally-ignorant live judge can't distill the contract from a
@@ -273,9 +297,13 @@ def demo() -> None:  # pragma: no cover - real CLI calls, spends tokens
     # lesson help?) from lesson-GENERATION quality (the live judge, tested separately).
     store = InMemoryLessonStore()
     seed_poison(store, TASKS)
-    cold, naive, warm = run_live(store, TASKS, key="live")
+    cold, naive, warm = run_live(store, TASKS, key="live", max_workers=_worker_count())
+    nv = net_value(warm, cold)
     print(f"COLD {cold.success_rate:.2f}  NAIVE {naive.success_rate:.2f}  "
           f"WARM {warm.success_rate:.2f}  lift {lift(warm, cold)}")
+    print(f"COLD mean_duration_s {cold.mean_duration_s:.2f}  "
+          f"WARM mean_duration_s {warm.mean_duration_s:.2f}  "
+          f"added_latency_s {nv['added_latency_s']:+.2f}  net_value {nv['net_value']:+.2f}")
 
 
 def demo_band(repeats: int = 3) -> None:  # pragma: no cover - real CLI calls, spends ~3x demo()
@@ -289,11 +317,13 @@ def demo_band(repeats: int = 3) -> None:  # pragma: no cover - real CLI calls, s
         seed_poison(s, TASKS)
         return s
 
-    r = run_live_repeated(make_store, TASKS, key="live", repeats=repeats)
+    r = run_live_repeated(make_store, TASKS, key="live", repeats=repeats,
+                          max_workers=_worker_count())
     for arm in ("cold", "naive", "warm"):
         b = r[arm]
         print(f"{arm.upper():5} mean {b['mean']:.2f}  band [{b['min']:.2f}, {b['max']:.2f}]  (n={b['n']})")
     print(f"lift_mean (WARM-COLD) {r['lift_mean']:+.2f}")
+    print(f"added_latency_mean_s (WARM-COLD) {r['added_latency_mean_s']:+.2f}")
 
 
 if __name__ == "__main__":  # pragma: no cover
