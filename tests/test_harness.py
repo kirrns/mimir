@@ -8,7 +8,12 @@ Invariants under test (BUILD_SPEC C5):
 - the run is logged one row per task (reproducibility artifact)
 """
 import json
+import threading
+import time
 
+import pytest
+
+from bench.claude_cli import ClaudeLimitError
 from bench.harness import COLD, COLD_NAIVE, WARM, Task, lift, net_value, run
 
 
@@ -230,3 +235,54 @@ def test_run_is_logged_one_row_per_task(tmp_path):
     assert row["arm"] == "cold"
     assert row["seed"] == 7
     assert row["task_id"] == "t1"
+
+
+# --- Opt-in concurrency: max_workers dispatches solver calls to a thread pool ------
+
+def test_max_workers_one_matches_default_sequential_records():
+    tasks = [_task("t1", "a", _binary("a")), _task("t2", "b", _binary("b"))]
+    solver = lambda payload, lessons: payload
+    default = run(tasks, solver=solver, seed=0, _clock=lambda: 0.0)
+    explicit_one = run(tasks, solver=solver, seed=0, max_workers=1, _clock=lambda: 0.0)
+    assert default.records == explicit_one.records
+
+
+def test_concurrent_run_executes_tasks_in_parallel():
+    tasks = [_task(f"t{i}", i, lambda answer: 1.0) for i in range(3)]
+    active = []
+    max_concurrent = []
+    lock = threading.Lock()
+
+    def solver(payload, lessons):
+        with lock:
+            active.append(1)
+            max_concurrent.append(len(active))
+        time.sleep(0.05)
+        with lock:
+            active.pop()
+        return payload
+
+    run(tasks, solver=solver, seed=0, max_workers=3)
+    assert max(max_concurrent) > 1  # at least two solver calls genuinely overlapped
+
+
+def test_concurrent_run_preserves_task_order_despite_completion_order():
+    tasks = [_task("slow", "a", _binary("a")), _task("fast", "b", _binary("b"))]
+
+    def solver(payload, lessons):
+        if payload == "a":
+            time.sleep(0.05)  # slow task finishes after the fast one
+        return payload
+
+    report = run(tasks, solver=solver, seed=0, max_workers=2)
+    assert [r["task_id"] for r in report.records] == ["slow", "fast"]
+
+
+def test_concurrent_run_raises_claude_limit_error():
+    tasks = [_task("t1", "a", _binary("a")), _task("t2", "b", _binary("b"))]
+
+    def solver(payload, lessons):
+        raise ClaudeLimitError("429: session limit")
+
+    with pytest.raises(ClaudeLimitError):
+        run(tasks, solver=solver, seed=0, max_workers=2)

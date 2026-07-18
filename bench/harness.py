@@ -15,6 +15,7 @@ import json
 import random
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import mean
@@ -92,6 +93,33 @@ def _apply_budget(lessons: list, budget: Optional[int]) -> list:
     return kept
 
 
+def _run_one_task(task: Task, solver: Solver, recall: Optional[Recall], budget: Optional[int],
+                  arm: str, _clock: Callable[[], float]) -> dict:
+    """One task's solver call -> its report record. Shared by the sequential and
+    concurrent paths in run() so both behave identically per task."""
+    lessons = _apply_budget(recall(task) if recall is not None else [], budget)
+    error: Optional[str] = None
+    start = _clock()
+    try:
+        answer = solver(task.payload, lessons)
+        score = float(task.verify(answer))
+    except ClaudeLimitError:
+        raise  # session limit: every remaining call is doomed — abort, don't score 0s
+    except Exception as exc:
+        score = 0.0  # a crash is a failed task (a MISTAKE), not a harness crash
+        error = repr(exc)
+        # Surface it: with a live network solver a crash is usually infra (rate-limit/
+        # timeout), NOT a wrong answer — silently scoring 0.0 would corrupt the headline.
+        print(f"[harness] solver error on {task.id} ({arm}): {error}", file=sys.stderr)
+    duration = _clock() - start
+    return {"task_id": task.id, "score": score,
+           "n_lessons": len(lessons),
+           "lesson_ids": [getattr(lo, "id", None) for lo in lessons],
+           "duration_s": duration,
+           "n_lesson_chars": sum(len(getattr(lo, "rule", "")) for lo in lessons),
+           "error": error}
+
+
 def run(
     tasks: list[Task],
     solver: Solver,
@@ -101,6 +129,7 @@ def run(
     seed: int = 0,
     log_path: Optional[Path] = None,
     budget: Optional[int] = None,
+    max_workers: Optional[int] = None,
     _clock: Callable[[], float] = time.perf_counter,
 ) -> Report:
     """Run a task set through the solver and score each.
@@ -113,6 +142,15 @@ def run(
     identically to every arm passed the same value — the honesty bar that stops a
     naive context-stuffing arm from winning purely on volume.
 
+    `max_workers` (None or 1, the default) runs tasks sequentially, unchanged from
+    every prior release. A value > 1 dispatches solver calls to a thread pool — real
+    wall-clock concurrency for I/O-bound solvers (e.g. a subprocess-backed live model
+    call) since Python releases the GIL while blocked on I/O. Records are always
+    reassembled in `tasks` order regardless of completion order, so logs stay
+    reproducible. A ClaudeLimitError from any task still aborts the whole run
+    (cancelling not-yet-started work) rather than scoring the rest — same contract
+    sequential or concurrent.
+
     Each record also carries `duration_s` (wall time around the solver call) and
     `n_lesson_chars` (recalled-lesson text volume, post-budget) — the C5 net-value
     cost signal (`net_value()` below). `_clock` is injectable for deterministic tests.
@@ -122,28 +160,22 @@ def run(
         arm = WARM if recall is not None else COLD
     report = Report(arm=arm, seed=seed)
 
-    for task in tasks:
-        lessons = _apply_budget(recall(task) if recall is not None else [], budget)
-        error: Optional[str] = None
-        start = _clock()
-        try:
-            answer = solver(task.payload, lessons)
-            score = float(task.verify(answer))
-        except ClaudeLimitError:
-            raise  # session limit: every remaining call is doomed — abort, don't score 0s
-        except Exception as exc:
-            score = 0.0  # a crash is a failed task (a MISTAKE), not a harness crash
-            error = repr(exc)
-            # Surface it: with a live network solver a crash is usually infra (rate-limit/
-            # timeout), NOT a wrong answer — silently scoring 0.0 would corrupt the headline.
-            print(f"[harness] solver error on {task.id} ({arm}): {error}", file=sys.stderr)
-        duration = _clock() - start
-        report.records.append({"task_id": task.id, "score": score,
-                               "n_lessons": len(lessons),
-                               "lesson_ids": [getattr(lo, "id", None) for lo in lessons],
-                               "duration_s": duration,
-                               "n_lesson_chars": sum(len(getattr(lo, "rule", "")) for lo in lessons),
-                               "error": error})
+    if not max_workers or max_workers <= 1:
+        for task in tasks:
+            report.records.append(_run_one_task(task, solver, recall, budget, arm, _clock))
+    else:
+        records: list[Optional[dict]] = [None] * len(tasks)
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_run_one_task, task, solver, recall, budget, arm, _clock): i
+                      for i, task in enumerate(tasks)}
+            try:
+                for future in as_completed(futures):
+                    records[futures[future]] = future.result()
+            except ClaudeLimitError:
+                for f in futures:
+                    f.cancel()
+                raise
+        report.records = records
 
     if log_path is not None:
         _write_log(report, Path(log_path))
