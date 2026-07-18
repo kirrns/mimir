@@ -1,4 +1,5 @@
 import json
+import logging
 
 import pytest
 
@@ -351,6 +352,93 @@ def test_hook_main_cline_calls_auto_consolidate_maybe_trigger(monkeypatch):
     monkeypatch.setattr(cli.sys, "stdin", io.StringIO(""))
     assert cli.hook_main_cline() == 0
     assert calls == [cli._log_path()]
+
+
+def test_extract_flag_value_returns_following_token():
+    import mimir.cli as cli
+
+    assert cli._extract_flag_value(["--config", "path.json"], "--config") == "path.json"
+
+
+def test_extract_flag_value_returns_none_when_absent():
+    import mimir.cli as cli
+
+    assert cli._extract_flag_value([], "--config") is None
+
+
+def test_extract_flag_value_returns_none_when_flag_is_last_token():
+    import mimir.cli as cli
+
+    assert cli._extract_flag_value(["--config"], "--config") is None
+
+
+def test_hook_main_uses_config_mapper_when_config_flag_given(tmp_path, monkeypatch):
+    import mimir.cli as cli
+
+    log = tmp_path / "episodes.jsonl"
+    config_path = tmp_path / "foo.json"
+    config_path.write_text(json.dumps({
+        "action_path": "tool_name",
+        "outcome_path": "result.status",
+        "fail_values": ["error"],
+    }), encoding="utf-8")
+    monkeypatch.setenv("MIMIR_EPISODE_LOG", str(log))
+    monkeypatch.setattr(cli.auto_consolidate, "maybe_trigger", lambda log_path: None)
+    monkeypatch.setattr(cli.sys, "stdin",
+                        io.StringIO(json.dumps({"tool_name": "foo.run",
+                                                "result": {"status": "error"}})))
+    rc = cli.hook_main(["--config", str(config_path)])
+    assert rc == 0
+    row = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+    assert row["action"] == "foo.run"
+    assert row["outcome_score"] == cli.OUTCOME_FAIL
+
+
+def test_hook_main_uses_config_mapper_from_env_var(tmp_path, monkeypatch):
+    import mimir.cli as cli
+
+    log = tmp_path / "episodes.jsonl"
+    config_path = tmp_path / "foo.json"
+    config_path.write_text(json.dumps({"action_path": "tool_name"}), encoding="utf-8")
+    monkeypatch.setenv("MIMIR_EPISODE_LOG", str(log))
+    monkeypatch.setenv("MIMIR_HOOK_CONFIG", str(config_path))
+    monkeypatch.setattr(cli.auto_consolidate, "maybe_trigger", lambda log_path: None)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps({"tool_name": "foo.run"})))
+    rc = cli.hook_main([])
+    assert rc == 0
+    row = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+    assert row["action"] == "foo.run"
+
+
+def test_hook_main_skips_capture_on_malformed_config(tmp_path, monkeypatch, caplog):
+    import mimir.cli as cli
+
+    log = tmp_path / "episodes.jsonl"
+    bad_config = tmp_path / "bad.json"
+    bad_config.write_text("not json{", encoding="utf-8")
+    monkeypatch.setenv("MIMIR_EPISODE_LOG", str(log))
+    monkeypatch.setattr(cli.auto_consolidate, "maybe_trigger", lambda log_path: None)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps({"tool_name": "foo.run"})))
+    with caplog.at_level(logging.ERROR):
+        rc = cli.hook_main(["--config", str(bad_config)])
+    assert rc == 0
+    assert not log.exists()
+    assert any(r.levelno >= logging.ERROR for r in caplog.records)
+
+
+def test_hook_main_without_config_still_uses_claude_code_mapper(tmp_path, monkeypatch):
+    import mimir.cli as cli
+
+    log = tmp_path / "episodes.jsonl"
+    monkeypatch.setenv("MIMIR_EPISODE_LOG", str(log))
+    monkeypatch.setattr(cli.auto_consolidate, "maybe_trigger", lambda log_path: None)
+    event = {"tool_name": "Bash", "is_error": True, "session_id": "s1"}
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(json.dumps(event)))
+    rc = cli.hook_main([])
+    assert rc == 0
+    row = json.loads(log.read_text(encoding="utf-8").splitlines()[0])
+    assert row["action"] == "Bash"
+    assert row["outcome_score"] == cli.OUTCOME_FAIL
 
 
 def test_auto_consolidate_worker_main_calls_consolidate_then_finish_run(monkeypatch):

@@ -14,6 +14,9 @@ Installed by `pip install mimir`:
     mimir install-hook --print   # just print the settings block to paste yourself
     mimir install-hook --cline   # write the PostToolUse hook script Cline picks up
                                  #   (capture only; ~/Documents/Cline/Rules/Hooks/)
+    mimir hook --config PATH     # capture from any tool via a declarative field-mapping
+                                 #   config (see docs/integrations/generic.md); or set
+                                 #   MIMIR_HOOK_CONFIG instead of --config
 
 The end-to-end demo: install-hook (capture) -> use Claude -> `mimir consolidate`
 (distill lessons into the LanceDB-backed store) -> `mimir-serve` (gated recall
@@ -23,6 +26,7 @@ gets served.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from datetime import datetime
@@ -30,8 +34,10 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from mimir import auto_consolidate
-from mimir.capture import OUTCOME_FAIL, from_cline_hook, run_hook
+from mimir.capture import OUTCOME_FAIL, from_cline_hook, from_config_hook, from_hook, run_hook
 from mimir.models import Episode, Lesson
+
+log = logging.getLogger("mimir.cli")
 
 DEFAULT_HOME = Path.home() / ".mimir"
 DEFAULT_LOG = DEFAULT_HOME / "episodes.jsonl"
@@ -42,6 +48,7 @@ HOOK_COMMAND = "mimir-hook"
 HOOK_EVENTS = ("PostToolUse", "SessionEnd")
 CITATION_KEY_ENV = "MIMIR_CITATION_KEY"
 EMBED_MODEL_ENV = "MIMIR_EMBED_MODEL"   # opt-in real semantic embedder (fastembed model name)
+HOOK_CONFIG_ENV = "MIMIR_HOOK_CONFIG"       # generic adapter: path to a field-mapping config
 
 # Cline has no settings.json to merge into — it picks up an executable script named after
 # the hook event from this directory (global scope; see docs.cline.bot/features/hooks).
@@ -240,10 +247,36 @@ def _ensure_utf8_stdio() -> None:
                 pass  # non-reconfigurable stream (e.g. redirected to a pipe); leave as-is
 
 
+def _extract_flag_value(args: list, flag: str) -> Optional[str]:
+    """Return the token following `flag` in args, or None if the flag isn't present
+    (or has nothing after it). No argparse needed for one optional flag."""
+    if flag in args:
+        idx = args.index(flag)
+        if idx + 1 < len(args):
+            return args[idx + 1]
+    return None
+
+
 def hook_main(argv: Optional[list] = None) -> int:
-    """`mimir-hook` — what a Claude Code hook invokes. Never raises, always 0."""
+    """`mimir-hook` — what a Claude Code hook invokes. Never raises, always 0.
+
+    Pass --config PATH (or set MIMIR_HOOK_CONFIG) to capture from any tool whose hook
+    payload isn't Claude Code's shape -- see docs/integrations/generic.md.
+    """
     _ensure_utf8_stdio()
-    rc = run_hook(sys.stdin.read(), log_path=_log_path())
+    args = argv if argv is not None else sys.argv[1:]
+    mapper = from_hook
+    config_path = _extract_flag_value(args, "--config") or os.environ.get(HOOK_CONFIG_ENV)
+    if config_path:
+        try:
+            config = json.loads(Path(config_path).read_text(encoding="utf-8"))
+            mapper = from_config_hook(config)
+        except Exception:
+            log.exception(
+                "mimir hook: failed to load --config %s, skipping this capture", config_path)
+            auto_consolidate.maybe_trigger(_log_path())
+            return 0
+    rc = run_hook(sys.stdin.read(), log_path=_log_path(), mapper=mapper)
     auto_consolidate.maybe_trigger(_log_path())
     return rc
 
