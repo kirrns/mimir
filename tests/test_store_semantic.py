@@ -122,7 +122,7 @@ def test_recall_routes_through_semantic_ranking_and_keeps_tau_gate():
     assert "L-weak" not in ids           # tau gate still authoritative
 
 
-# --- live LanceDB (Cognee's own vector engine), sync API — runs on this box ----
+# --- live LanceDB, sync API — runs on this box ----
 
 def test_lancedb_vector_index_live(tmp_path):
     pytest.importorskip("lancedb")

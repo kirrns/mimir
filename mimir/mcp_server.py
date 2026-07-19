@@ -4,7 +4,7 @@ Dependency-free like the rest of Mimir. The retrieval logic (`recall`) is pure
 and fully tested here; the MCP tool surface is declared as schema-bearing
 definitions (`build_tools`). The real transport — `mcp.FastMCP` registering
 these tools, triggered from Claude Code `PreToolUse`/`SessionStart` hooks —
-wraps this later, the same swap-the-adapter pattern as the Cognee-backed store.
+wraps this later, the same swap-the-adapter pattern as the semantic store.
 
 ponytail: no `mcp` SDK dependency until live wiring needs it; the schemas here
 are exactly what FastMCP consumes, so the wrapper is mechanical.
