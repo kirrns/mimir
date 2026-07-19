@@ -3,7 +3,7 @@ import logging
 
 import pytest
 
-from mimir.cli import add_hook_command, cline_hook_script, install_cline_hook, install_hook
+from mimir.hook_install import add_hook_command, cline_hook_script, install_cline_hook, install_hook
 
 
 def test_add_hook_command_is_idempotent():
@@ -165,7 +165,7 @@ def test_store_persistence_survives_reload_bitemporally(tmp_path):
 def test_build_store_defaults_to_hash_embed_without_env_var(tmp_path, monkeypatch):
     pytest.importorskip("lancedb")
     import mimir.cli as cli
-    from mimir.store_cognee import hash_embed
+    from mimir.store_semantic import hash_embed
 
     monkeypatch.delenv(cli.EMBED_MODEL_ENV, raising=False)
     store = cli.build_store(lance_url=tmp_path / "lance.db", lessons_path=tmp_path / "lessons.json")
@@ -175,7 +175,7 @@ def test_build_store_defaults_to_hash_embed_without_env_var(tmp_path, monkeypatc
 def test_build_store_uses_fastembed_when_env_var_set(tmp_path, monkeypatch):
     pytest.importorskip("lancedb")
     import mimir.cli as cli
-    import mimir.store_cognee as sc
+    import mimir.store_semantic as sc
     from mimir.models import Lesson
 
     calls = []
@@ -302,7 +302,7 @@ def test_export_main_prints_digest_from_store(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "DEFAULT_LESSONS", tmp_path / "lessons.json")
     monkeypatch.setattr(cli, "DEFAULT_LANCE", tmp_path / "lance.db")
 
-    store = cli.build_store()
+    store = cli.build_store(lance_url=tmp_path / "lance.db", lessons_path=tmp_path / "lessons.json")
     store.add(Lesson(rule="pin tool versions before release", confidence=0.8, id="L1"))
     cli.save_lessons(store, cli.DEFAULT_LESSONS)
 

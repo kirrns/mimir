@@ -2,8 +2,9 @@
 
 A thin, swappable interface. This in-memory reference implementation lets the
 rest of the system (C2 consolidation, C4 retrieval, C5 benchmark) be built and
-tested without standing up Cognee. The Cognee-backed adapter implements the same
-surface later (PRD §8: storage behind a thin `mimir` interface, backend swappable).
+tested without a vector index. `SemanticLessonStore` (store_semantic.py)
+implements the same surface with semantic recall added (PRD §8: storage
+behind a thin `mimir` interface, backend swappable).
 """
 from __future__ import annotations
 

@@ -6,7 +6,7 @@ backend: `prefetch` is mimir.recall reaching Hermes' prompt.
 
 Maps onto Mimir's existing two-speed design rather than fighting it:
 - `prefetch` (called before each turn) -> mimir.recall against the same
-  Cognee/LanceDB-backed store everything else reads from.
+  LanceDB-backed store everything else reads from.
 - `sync_turn` (called after each turn) is a deliberate no-op here. A turn
   transcript has no failure signal to gate a LESSON on — Mimir only turns
   *failures* into lessons, and the tool-call-level failure signal already
@@ -36,7 +36,7 @@ class MimirMemoryProvider:
 
     def initialize(self, session_id: str, *, store: Optional[object] = None, **kwargs) -> None:
         """`store` is a test-only injection point; real Hermes calls this with just
-        session_id + hermes_home, so a normal call builds the standard Cognee store."""
+        session_id + hermes_home, so a normal call builds the standard store."""
         if store is not None:
             self._store = store
         else:

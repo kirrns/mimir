@@ -29,32 +29,37 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
-from typing import Callable, Iterable, Optional
+from typing import Callable, Optional
 
 from mimir import auto_consolidate
 from mimir.capture import OUTCOME_FAIL, from_cline_hook, from_config_hook, from_hook, run_hook
+from mimir.hook_install import (
+    DEFAULT_CLINE_HOOKS_DIR,
+    DEFAULT_SETTINGS,
+    HOOK_COMMAND,
+    HOOK_EVENTS,
+    add_hook_command,
+    cline_hook_script,
+    hook_block,
+    install_cline_hook,
+    install_hook,
+)
 from mimir.models import Episode, Lesson
+from mimir.store_io import (
+    DEFAULT_HOME,
+    DEFAULT_LANCE,
+    DEFAULT_LESSONS,
+    EMBED_MODEL_ENV,
+    build_store,
+    save_lessons,
+)
 
 log = logging.getLogger("mimir.cli")
 
-DEFAULT_HOME = Path.home() / ".mimir"
 DEFAULT_LOG = DEFAULT_HOME / "episodes.jsonl"
-DEFAULT_LESSONS = DEFAULT_HOME / "lessons.json"     # persisted LESSON objects (source of truth)
-DEFAULT_LANCE = DEFAULT_HOME / "lance.db"           # LanceDB vector index (rebuilt from lessons)
-DEFAULT_SETTINGS = Path.home() / ".claude" / "settings.json"
-HOOK_COMMAND = "mimir-hook"
-HOOK_EVENTS = ("PostToolUse", "SessionEnd")
 CITATION_KEY_ENV = "MIMIR_CITATION_KEY"
-EMBED_MODEL_ENV = "MIMIR_EMBED_MODEL"   # opt-in real semantic embedder (fastembed model name)
 HOOK_CONFIG_ENV = "MIMIR_HOOK_CONFIG"       # generic adapter: path to a field-mapping config
-
-# Cline has no settings.json to merge into — it picks up an executable script named after
-# the hook event from this directory (global scope; see docs.cline.bot/features/hooks).
-DEFAULT_CLINE_HOOKS_DIR = Path.home() / "Documents" / "Cline" / "Rules" / "Hooks"
-CLINE_HOOK_NAME = "PostToolUse"
-CLINE_HOOK_COMMAND = "mimir-hook-cline"
 
 
 def _log_path() -> Path:
@@ -63,58 +68,6 @@ def _log_path() -> Path:
 
 def _citation_key() -> str:
     return os.environ.get(CITATION_KEY_ENV, "mimir-dev")  # HMAC key for FR7 citations
-
-
-def _embed_fn():
-    """None -> LanceDBVectorIndex's own hash_embed default (zero deps, unchanged
-    behaviour). Set MIMIR_EMBED_MODEL (e.g. 'BAAI/bge-small-en-v1.5') to opt into
-    real local semantic embeddings via fastembed (pip install 'mimir[embed]')."""
-    model_name = os.environ.get(EMBED_MODEL_ENV)
-    if not model_name:
-        return None
-    from mimir.store_cognee import fastembed_embed
-    return lambda texts: fastembed_embed(texts, model_name=model_name)
-
-
-# ---- store persistence (LESSON objects on disk; vectors rebuilt on load) ----
-
-_DT_FIELDS = ("valid_from", "invalid_at", "last_validated")
-
-
-def _lesson_from_row(row: dict) -> Lesson:
-    data = dict(row)
-    for f in _DT_FIELDS:
-        v = data.get(f)
-        data[f] = datetime.fromisoformat(v) if isinstance(v, str) else None
-    return Lesson(**data)
-
-
-def load_lessons(store, path: Path) -> int:
-    """Rehydrate persisted LESSONs into `store` (re-upserting each into its vector index)."""
-    if not path.exists():
-        return 0
-    rows = json.loads(path.read_text(encoding="utf-8"))
-    for row in rows:
-        store.add(_lesson_from_row(row))
-    return len(rows)
-
-
-def save_lessons(store, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(store.snapshot(), encoding="utf-8")  # deterministic JSON (store.snapshot)
-
-
-def build_store(*, lance_url: Optional[Path] = None, lessons_path: Optional[Path] = None):
-    """The served/consolidated store: LanceDB vector engine + persisted lessons."""
-    from mimir.store_cognee import CogneeLessonStore, LanceDBVectorIndex
-
-    lance_url = lance_url or DEFAULT_LANCE          # resolved at call time, not frozen at import
-    lessons_path = lessons_path or DEFAULT_LESSONS
-    embed = _embed_fn()
-    index_kwargs = {"embed": embed} if embed is not None else {}
-    store = CogneeLessonStore(index=LanceDBVectorIndex(url=str(lance_url), **index_kwargs))
-    load_lessons(store, lessons_path)
-    return store
 
 
 def _episodes_from_log(path: Path, *, failures_only: bool = True) -> list[Episode]:
@@ -144,92 +97,6 @@ def _split_for_probe(episodes: list[Episode]) -> tuple[list[Episode], list[Episo
         return [], episodes
     n_held_out = max(1, len(episodes) // 3)
     return episodes[-n_held_out:], episodes[:-n_held_out]
-
-
-# ---- pure, testable settings merge ----------------------------------------
-
-def add_hook_command(settings: dict, event: str, command: str) -> dict:
-    """Return a new settings dict with `command` registered under hook `event`.
-
-    Idempotent: if the command is already present for that event, the *same*
-    input object is returned unchanged. Never mutates the argument.
-    """
-    hooks = dict(settings.get("hooks", {}))
-    groups = [dict(g) for g in hooks.get(event, [])]
-    for group in groups:
-        for entry in group.get("hooks", []):
-            if entry.get("command") == command:
-                return settings  # already registered — no-op
-    groups.append({"hooks": [{"type": "command", "command": command}]})
-    hooks[event] = groups
-    return {**settings, "hooks": hooks}
-
-
-def hook_block(command: str = HOOK_COMMAND,
-               events: Iterable[str] = HOOK_EVENTS) -> dict:
-    """The settings.json fragment that registers the capture hook."""
-    settings: dict = {}
-    for event in events:
-        settings = add_hook_command(settings, event, command)
-    return settings
-
-
-# ---- IO around the merge ---------------------------------------------------
-
-def _load_settings(path: Path) -> dict:
-    """Load settings.json, or {} if absent/empty. Refuse to touch invalid JSON
-    so we never clobber a file we can't safely round-trip."""
-    if not path.exists() or not path.read_text(encoding="utf-8").strip():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise SystemExit(
-            f"{path} is not valid JSON ({exc}); refusing to overwrite. "
-            "Fix it, or run `mimir install-hook --print` and paste the block yourself."
-        )
-    if not isinstance(data, dict):
-        raise SystemExit(f"{path} is not a JSON object; refusing to overwrite.")
-    return data
-
-
-def install_hook(settings_path: Path = DEFAULT_SETTINGS, *,
-                 command: str = HOOK_COMMAND,
-                 events: Iterable[str] = HOOK_EVENTS) -> str:
-    """Merge the capture hook into settings.json. Idempotent; backs up first."""
-    settings = _load_settings(settings_path)
-    updated = settings
-    for event in events:
-        updated = add_hook_command(updated, event, command)
-    if updated is settings:
-        return f"already registered in {settings_path}"
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    if settings_path.exists():
-        backup = settings_path.parent / (settings_path.name + ".bak")
-        backup.write_text(settings_path.read_text(encoding="utf-8"), encoding="utf-8")
-    settings_path.write_text(json.dumps(updated, indent=2), encoding="utf-8")
-    return f"registered {command} for {', '.join(events)} in {settings_path}"
-
-
-def cline_hook_script(command: str = CLINE_HOOK_COMMAND) -> str:
-    """The executable script Cline invokes for PostToolUse (POSIX shell)."""
-    return f"#!/usr/bin/env sh\nexec {command}\n"
-
-
-def install_cline_hook(hooks_dir: Path = DEFAULT_CLINE_HOOKS_DIR, *,
-                       command: str = CLINE_HOOK_COMMAND) -> str:
-    """Write the PostToolUse hook script Cline picks up automatically. It's mimir's own
-    file (nothing to merge, unlike Claude Code's settings.json), so this just overwrites."""
-    hooks_dir.mkdir(parents=True, exist_ok=True)
-    script_path = hooks_dir / CLINE_HOOK_NAME
-    # newline="\n": the shebang line must stay LF-only even when written on Windows,
-    # or a POSIX `sh` fails to resolve "/usr/bin/env sh\r" (bad-interpreter error).
-    script_path.write_text(cline_hook_script(command), encoding="utf-8", newline="\n")
-    try:
-        script_path.chmod(script_path.stat().st_mode | 0o111)
-    except OSError:
-        pass  # ponytail: no POSIX exec bit on Windows; Cline's Windows invocation is unconfirmed
-    return f"wrote {script_path}"
 
 
 # ---- entry points ----------------------------------------------------------
@@ -293,7 +160,7 @@ def consolidate_main(argv: Optional[list] = None, *, judge: Optional[Callable] =
                      probe: Optional[Callable] = None) -> int:
     """`mimir consolidate` — C2 slow path: logged failures -> gated LESSONs -> persist.
 
-    Builds the Cognee/LanceDB-backed store, runs EXTRACT (FR1 judge) -> ADMIT (FR3
+    Builds the LanceDB-backed store, runs EXTRACT (FR1 judge) -> ADMIT (FR3
     live counterfactual epsilon-gate) -> RESOLVE (FR2 contradiction) -> WRITE with an
     HMAC citation (FR7), then saves the store. `judge`/`probe` are real Claude calls
     by default (subscription auth, no API key); inject fakes to exercise the wiring
@@ -306,7 +173,7 @@ def consolidate_main(argv: Optional[list] = None, *, judge: Optional[Callable] =
         print(f"no failure EPISODEs in {_log_path()} yet; nothing to consolidate")
         return 0
 
-    store = build_store()
+    store = build_store(lance_url=DEFAULT_LANCE, lessons_path=DEFAULT_LESSONS)
     total = len(episodes)
 
     if judge is None:
@@ -366,7 +233,7 @@ def serve_main(argv: Optional[list] = None) -> int:
     _ensure_utf8_stdio()
     from mimir.serve import build_server
     try:
-        store = build_store()
+        store = build_store(lance_url=DEFAULT_LANCE, lessons_path=DEFAULT_LESSONS)
         server = build_server(store, log_path=_log_path())
     except ImportError as exc:
         print(f"mimir-serve needs the serve deps: pip install 'mimir[mcp]' ({exc})",
@@ -397,7 +264,7 @@ def export_main(argv: Optional[list] = None) -> int:
         print("usage: mimir export --digest", file=sys.stderr)
         return 2
     try:
-        store = build_store()
+        store = build_store(lance_url=DEFAULT_LANCE, lessons_path=DEFAULT_LESSONS)
     except ImportError as exc:
         print(f"mimir export needs the serve deps: pip install 'mimir[mcp]' ({exc})",
               file=sys.stderr)

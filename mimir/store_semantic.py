@@ -1,7 +1,7 @@
 """C3 backend — semantic LESSON recall over a vector index.
 
-A `CogneeLessonStore` that keeps the proven bi-temporal CRUD (inherited from
-InMemoryLessonStore, so every C3 contract test still holds) and adds
+A `SemanticLessonStore` that keeps the proven bi-temporal CRUD (inherited
+from InMemoryLessonStore, so every C3 contract test still holds) and adds
 `semantic_recall` over a pluggable `VectorIndex`.
 
 Two indexes implement the same seam:
@@ -107,12 +107,11 @@ class InProcessVectorIndex:
 
 
 class LanceDBVectorIndex:
-    """LanceDB (Cognee's own vector engine) via its SYNC API — runs live here.
-
-    Cognee stores vectors in LanceDB. Its async adapter hangs on this Py3.14 /
-    Windows box, but LanceDB's sync writer works fine, so this talks to the same
-    real on-disk vector database directly. Same seam as the in-process index;
-    persists to `url`. Embedding is injected (unit vectors -> cosine metric).
+    """LanceDB via its SYNC API — a real on-disk vector database, talked to
+    directly (no Cognee involved; see the module docstring's history note
+    on why an earlier Cognee-routed adapter was removed). Same seam as the
+    in-process index; persists to `url`. Embedding is injected (unit
+    vectors -> cosine metric).
     """
 
     TABLE = "mimir_lessons"
@@ -153,7 +152,7 @@ class LanceDBVectorIndex:
 
 # --- the store ---------------------------------------------------------------
 
-class CogneeLessonStore(InMemoryLessonStore):
+class SemanticLessonStore(InMemoryLessonStore):
     """Bi-temporal lesson store + semantic recall over a vector index.
 
     CRUD/bi-temporal behaviour is inherited unchanged (C3 contract holds). Every

@@ -53,7 +53,7 @@ capture (fast path)          consolidate (slow path)          recall (MCP)
 ─────────────────────        ─────────────────────────        ─────────────────
 Claude Code hook logs   ──►  LLM judge extracts a rule   ──►  confidence-gated
 EPISODEs (action /           from failure episodes;           retrieval over the
-context / consequence)       contradiction check, then        Cognee/LanceDB
+context / consequence)       contradiction check, then        LanceDB
 to append-only JSONL.        HMAC-signed LESSON written       vector store, served
 Never blocks, never          to the vector store.             as MCP tools.
 raises.
@@ -161,7 +161,7 @@ code — see [docs/integrations/generic.md](docs/integrations/generic.md).
 ## Semantic storage
 
 Semantic storage and retrieval run directly on [LanceDB](https://github.com/lancedb/lancedb)
-(`mimir/store_cognee.py`). Lessons are embedded and recalled through a thin,
+(`mimir/store_semantic.py`). Lessons are embedded and recalled through a thin,
 swappable `VectorIndex` seam (LanceDB for a real on-disk store, or a
 zero-dependency in-process cosine index); the persisted LESSON objects remain
 the source of truth and the vector index is rebuilt from them on load.

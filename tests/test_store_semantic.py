@@ -1,4 +1,4 @@
-"""C3 backend — CogneeLessonStore: bi-temporal parity + semantic recall.
+"""C3 backend — SemanticLessonStore: bi-temporal parity + semantic recall.
 
 - the store keeps the InMemory bi-temporal contract (supersede/rollback/active)
 - semantic_recall ranks ACTIVE lessons by vector similarity and respects the gate
@@ -6,7 +6,7 @@
 import pytest
 
 from mimir.models import Lesson
-from mimir.store_cognee import CogneeLessonStore, InProcessVectorIndex, hash_embed
+from mimir.store_semantic import SemanticLessonStore, InProcessVectorIndex, hash_embed
 
 
 def _lesson(rule, confidence=0.7, **kw):
@@ -16,7 +16,7 @@ def _lesson(rule, confidence=0.7, **kw):
 # --- inherited bi-temporal contract still holds ------------------------------
 
 def test_supersede_and_active_parity():
-    store = CogneeLessonStore()
+    store = SemanticLessonStore()
     old = store.add(_lesson("retry network calls once", confidence=0.5))
     new = store.supersede(old, _lesson("retry with exponential backoff", confidence=0.8))
     assert store.get(old).status == "superseded"
@@ -25,7 +25,7 @@ def test_supersede_and_active_parity():
 
 
 def test_rollback_reactivates():
-    store = CogneeLessonStore()
+    store = SemanticLessonStore()
     old = store.add(_lesson("a"))
     store.supersede(old, _lesson("b"))
     store.rollback(old)
@@ -35,7 +35,7 @@ def test_rollback_reactivates():
 # --- semantic recall ---------------------------------------------------------
 
 def test_semantic_recall_ranks_by_meaning_over_lexical_position():
-    store = CogneeLessonStore()
+    store = SemanticLessonStore()
     store.add(_lesson("flush the buffer before reading or the read returns empty", id="L-flush"))
     store.add(_lesson("paginate the list endpoint, it caps at two items per page", id="L-page"))
     store.add(_lesson("the timer schedule argument is milliseconds not seconds", id="L-unit"))
@@ -46,7 +46,7 @@ def test_semantic_recall_ranks_by_meaning_over_lexical_position():
 
 
 def test_semantic_recall_excludes_superseded_even_if_indexed():
-    store = CogneeLessonStore()
+    store = SemanticLessonStore()
     old = store.add(_lesson("flush the buffer before reading", id="L-old"))
     store.supersede(old, _lesson("call sync=True; flushing the buffer is not enough", id="L-new"))
     hits = store.semantic_recall("buffer flush read", k=5)
@@ -70,7 +70,7 @@ def test_fastembed_embed_normalizes_output_via_injected_model():
     (unit vectors -> cosine metric) requires it."""
     import math
 
-    from mimir.store_cognee import fastembed_embed
+    from mimir.store_semantic import fastembed_embed
 
     class _FakeModel:
         def __init__(self, model_name):
@@ -90,7 +90,7 @@ def test_fastembed_embed_live_or_skip():
     pytest.importorskip("fastembed")
     import math
 
-    from mimir.store_cognee import fastembed_embed
+    from mimir.store_semantic import fastembed_embed
 
     vecs = fastembed_embed(["flush the buffer before reading"])
     assert len(vecs) == 1
@@ -99,7 +99,7 @@ def test_fastembed_embed_live_or_skip():
 
 def test_injected_index_is_used():
     idx = InProcessVectorIndex()
-    store = CogneeLessonStore(index=idx)
+    store = SemanticLessonStore(index=idx)
     store.add(_lesson("flush the buffer", id="L1"))
     assert idx.query("flush buffer", k=1)[0][0] == "L1"
 
@@ -107,7 +107,7 @@ def test_injected_index_is_used():
 def test_recall_routes_through_semantic_ranking_and_keeps_tau_gate():
     from mimir.mcp_server import recall
 
-    store = CogneeLessonStore()
+    store = SemanticLessonStore()
     store.add(_lesson("flush the buffer before reading or the read returns empty",
                       confidence=0.9, supporting_episodes=["e1"], id="L-flush"))
     store.add(_lesson("the timer schedule argument is milliseconds not seconds",
@@ -126,7 +126,7 @@ def test_recall_routes_through_semantic_ranking_and_keeps_tau_gate():
 
 def test_lancedb_vector_index_live(tmp_path):
     pytest.importorskip("lancedb")
-    from mimir.store_cognee import LanceDBVectorIndex
+    from mimir.store_semantic import LanceDBVectorIndex
 
     idx = LanceDBVectorIndex(url=str(tmp_path / "lance.db"))
     idx.upsert("L-flush", "flush the buffer before reading or the read returns empty")
@@ -141,9 +141,9 @@ def test_lancedb_vector_index_live(tmp_path):
 
 def test_lancedb_backed_store_keeps_gate(tmp_path):
     pytest.importorskip("lancedb")
-    from mimir.store_cognee import LanceDBVectorIndex
+    from mimir.store_semantic import LanceDBVectorIndex
 
-    store = CogneeLessonStore(index=LanceDBVectorIndex(url=str(tmp_path / "s.db")))
+    store = SemanticLessonStore(index=LanceDBVectorIndex(url=str(tmp_path / "s.db")))
     old = store.add(_lesson("flush the buffer before reading", id="L-old"))
     store.supersede(old, _lesson("call sync True flush is not enough for the buffer", id="L-new"))
     ids = {h.id for h in store.semantic_recall("flush the buffer", k=5)}

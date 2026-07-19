@@ -61,7 +61,7 @@ def recall(store, query: str, *, tau: float = TAU, k: int = DEFAULT_K,
     active = store.active()
     contradicted = {cid for lo in active for cid in lo.contradicts}
 
-    # Prefer vector/semantic ranking when the store provides it (CogneeLessonStore);
+    # Prefer vector/semantic ranking when the store provides it (SemanticLessonStore);
     # fall back to lexical query-overlap otherwise. The FR5 gates (tau, contradiction,
     # uncertainty) apply identically to whichever ranking the store hands back.
     semantic = getattr(store, "semantic_recall", None)
