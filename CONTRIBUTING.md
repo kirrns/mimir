@@ -14,7 +14,7 @@ of help matters.
 
 ```bash
 git clone https://github.com/kirnsal/mimir && cd mimir
-pip install -e '.[dev,mcp,cognee]'
+pip install -e '.[dev,mcp,embed]'
 pytest
 ```
 
