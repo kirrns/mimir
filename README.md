@@ -227,13 +227,6 @@ issue? See [SECURITY.md](SECURITY.md) rather than opening a public issue.
 
 ---
 
-## How this was built
-
-Built with Claude Code (Anthropic) as an AI coding assistant, under human
-direction and review — including its own design specs and implementation
-plans, kept in [`docs/superpowers/`](docs/superpowers/) as a transparency
-trail, not required reading to use Mimir.
-
 ## License
 
 [Apache License 2.0](LICENSE)
