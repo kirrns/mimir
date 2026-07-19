@@ -1,6 +1,6 @@
 # Security Policy
 
-Mimir is early-stage (v0.0.1). If you find a security issue — including in
+Mimir is pre-1.0 (v0.1.0). If you find a security issue — including in
 how it handles the local `.mimir/` store, the HMAC lesson citations, or the
 MCP tool surface — please report it responsibly instead of opening a public
 issue.
@@ -14,9 +14,8 @@ Include:
 - Steps to reproduce (a minimal repro is ideal)
 - Any relevant logs or stack traces
 
-You should get an acknowledgment within a few days. There's no bug bounty at
-this stage — this is a young solo project — but every report is read and
-taken seriously.
+You should get an acknowledgment within a few days. There's no bug bounty
+program, but every report is read and taken seriously.
 
 ## Supported Versions
 

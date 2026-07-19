@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mimir"
-version = "0.0.1"
-description = "A developer-facing memory layer for AI agents (MCP server). In development."
+version = "0.1.0"
+description = "A developer-facing memory layer for AI agents (MCP server)."
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 dependencies = []

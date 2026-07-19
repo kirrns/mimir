@@ -1,7 +1,6 @@
 # Contributing to Mimir
 
-Thanks for considering contributing — Mimir is early (v0.0.1) and every bit
-of help matters.
+Thanks for considering contributing — every bit of help matters.
 
 ## Ways to contribute
 
