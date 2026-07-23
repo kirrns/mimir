@@ -133,7 +133,7 @@ needs no server — open it directly and screen-record the bars filling in.
 ## Quickstart
 
 ```bash
-pip install 'mimir[mcp]' && mimir setup
+pip install 'mimir-agent-memory[mcp]' && mimir setup
 ```
 
 One command: it registers the capture hook into Claude Code
@@ -193,7 +193,7 @@ recall, opt into a local [fastembed](https://github.com/qdrant/fastembed)
 model (ONNX, no torch, no network after the first download):
 
 ```bash
-pip install 'mimir[embed]'
+pip install 'mimir-agent-memory[embed]'
 export MIMIR_EMBED_MODEL=BAAI/bge-small-en-v1.5   # any fastembed model name
 ```
 

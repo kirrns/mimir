@@ -66,7 +66,7 @@ DEFAULT_FASTEMBED_MODEL = "BAAI/bge-small-en-v1.5"
 def fastembed_embed(texts: list[str], *, model_name: str = DEFAULT_FASTEMBED_MODEL,
                     _model_cls: Optional[type] = None) -> list[list[float]]:
     """Real local semantic embedder (ONNX via fastembed — no torch, no network after
-    the first model download). Opt-in: `pip install 'mimir[embed]'` and set
+    the first model download). Opt-in: `pip install 'mimir-agent-memory[embed]'` and set
     MIMIR_EMBED_MODEL (see cli.py build_store()); hash_embed stays the zero-dependency
     default otherwise. Output is unit-normalized to match hash_embed's contract
     (`Embed`: unit vectors -> cosine metric), since fastembed doesn't guarantee it.

@@ -23,7 +23,7 @@ _DT_FIELDS = ("valid_from", "invalid_at", "last_validated")
 def _embed_fn():
     """None -> LanceDBVectorIndex's own hash_embed default (zero deps, unchanged
     behaviour). Set MIMIR_EMBED_MODEL (e.g. 'BAAI/bge-small-en-v1.5') to opt into
-    real local semantic embeddings via fastembed (pip install 'mimir[embed]')."""
+    real local semantic embeddings via fastembed (pip install 'mimir-agent-memory[embed]')."""
     model_name = os.environ.get(EMBED_MODEL_ENV)
     if not model_name:
         return None

@@ -383,7 +383,7 @@ def test_export_main_handles_missing_serve_deps(monkeypatch, capsys):
     monkeypatch.setattr(cli, "build_store", lambda **kw: (_ for _ in ()).throw(ImportError("No module named 'lancedb'")))
     assert cli.export_main(["--digest"]) == 1
     err = capsys.readouterr().err
-    assert "pip install 'mimir[mcp]'" in err
+    assert "pip install 'mimir-agent-memory[mcp]'" in err
 
 
 def test_main_dispatches_export_command(monkeypatch):

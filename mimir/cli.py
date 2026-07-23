@@ -1,6 +1,6 @@
 """Mimir CLI — the zero-hustle entry points (PRD G5).
 
-Installed by `pip install 'mimir[mcp]'`:
+Installed by `pip install 'mimir-agent-memory[mcp]'`:
 
     mimir setup                  # one command: registers the capture hook AND
                                  #   mimir-serve as an MCP server (via `claude mcp
@@ -10,7 +10,7 @@ Installed by `pip install 'mimir[mcp]'`:
     mimir consolidate            # slow path (C2): turn logged failure EPISODEs into
                                  #   gated LESSONs and persist them (needs a live judge)
     mimir-serve                  # serve the MCP tool surface over stdio, backed by
-                                 #   the LanceDB LESSON store (pip install 'mimir[mcp]')
+                                 #   the LanceDB LESSON store (pip install 'mimir-agent-memory[mcp]')
     mimir export --digest        # print active lessons as a markdown digest to stdout
     mimir install-hook           # register mimir-hook into ~/.claude/settings.json
                                  #   (idempotent, backs up the old file)
@@ -240,7 +240,7 @@ def serve_main(argv: Optional[list] = None) -> int:
         store = build_store(lance_url=DEFAULT_LANCE, lessons_path=DEFAULT_LESSONS)
         server = build_server(store, log_path=_log_path())
     except ImportError as exc:
-        print(f"mimir-serve needs the serve deps: pip install 'mimir[mcp]' ({exc})",
+        print(f"mimir-serve needs the serve deps: pip install 'mimir-agent-memory[mcp]' ({exc})",
               file=sys.stderr)
         return 1
     print(f"mimir-serve: {len(store.active())} active lessons loaded from {DEFAULT_LESSONS}",
@@ -270,7 +270,7 @@ def export_main(argv: Optional[list] = None) -> int:
     try:
         store = build_store(lance_url=DEFAULT_LANCE, lessons_path=DEFAULT_LESSONS)
     except ImportError as exc:
-        print(f"mimir export needs the serve deps: pip install 'mimir[mcp]' ({exc})",
+        print(f"mimir export needs the serve deps: pip install 'mimir-agent-memory[mcp]' ({exc})",
               file=sys.stderr)
         return 1
     print(render_digest(store.active()))
