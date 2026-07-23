@@ -131,7 +131,9 @@ def test_register_mcp_server_skips_when_claude_cli_missing(monkeypatch):
 def test_register_mcp_server_succeeds(monkeypatch):
     import mimir.hook_install as hook_install
 
-    monkeypatch.setattr(hook_install.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(hook_install.shutil, "which",
+                        lambda name: "/usr/bin/claude" if name == "claude" else None)
+    monkeypatch.setattr(hook_install, "_resolve_command", lambda name: name)  # deterministic: skip real fs lookup
     calls = []
 
     class _Result:
@@ -149,10 +151,32 @@ def test_register_mcp_server_succeeds(monkeypatch):
     assert calls == [["/usr/bin/claude", "mcp", "add", "mimir", "--", "mimir-serve"]]
 
 
+def test_register_mcp_server_resolves_command_to_absolute_path(monkeypatch, tmp_path):
+    import mimir.hook_install as hook_install
+
+    exe = tmp_path / "mimir-serve"
+    exe.touch()
+    monkeypatch.setattr(hook_install.shutil, "which",
+                        lambda name: "/usr/bin/claude" if name == "claude" else None)
+    monkeypatch.setattr(hook_install, "_resolve_command", lambda name: str(exe))
+    calls = []
+
+    class _Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(hook_install.subprocess, "run",
+                        lambda cmd, **kwargs: calls.append(cmd) or _Result())
+    register_mcp_server()
+    assert calls == [["/usr/bin/claude", "mcp", "add", "mimir", "--", str(exe)]]
+
+
 def test_register_mcp_server_is_idempotent_when_already_registered(monkeypatch):
     import mimir.hook_install as hook_install
 
-    monkeypatch.setattr(hook_install.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(hook_install.shutil, "which",
+                        lambda name: "/usr/bin/claude" if name == "claude" else None)
 
     class _Result:
         returncode = 1
@@ -167,7 +191,8 @@ def test_register_mcp_server_is_idempotent_when_already_registered(monkeypatch):
 def test_register_mcp_server_reports_other_failures(monkeypatch):
     import mimir.hook_install as hook_install
 
-    monkeypatch.setattr(hook_install.shutil, "which", lambda name: "/usr/bin/claude")
+    monkeypatch.setattr(hook_install.shutil, "which",
+                        lambda name: "/usr/bin/claude" if name == "claude" else None)
 
     class _Result:
         returncode = 1
@@ -178,6 +203,55 @@ def test_register_mcp_server_reports_other_failures(monkeypatch):
     msg = register_mcp_server()
     assert "failed" in msg
     assert "permission denied" in msg
+
+
+def test_resolve_command_returns_which_result_when_on_path(monkeypatch):
+    import mimir.hook_install as hook_install
+
+    monkeypatch.setattr(hook_install.shutil, "which", lambda name: f"/usr/bin/{name}")
+    assert hook_install._resolve_command("mimir-serve") == "/usr/bin/mimir-serve"
+
+
+def test_resolve_command_falls_back_to_scripts_dir_when_not_on_path(monkeypatch, tmp_path):
+    import mimir.hook_install as hook_install
+
+    scripts_dir = tmp_path / "Scripts"
+    scripts_dir.mkdir()
+    exe = scripts_dir / ("mimir-serve.exe" if hook_install.os.name == "nt" else "mimir-serve")
+    exe.touch()
+    monkeypatch.setattr(hook_install.shutil, "which", lambda name: None)
+    monkeypatch.setattr(hook_install.sysconfig, "get_path", lambda kind, scheme=None: str(scripts_dir))
+    assert hook_install._resolve_command("mimir-serve") == str(exe)
+
+
+def test_resolve_command_falls_back_to_bare_name_when_unresolvable(monkeypatch):
+    import mimir.hook_install as hook_install
+
+    monkeypatch.setattr(hook_install.shutil, "which", lambda name: None)
+    monkeypatch.setattr(hook_install.sysconfig, "get_path",
+                        lambda kind, scheme=None: "/nonexistent/scripts/dir")
+    assert hook_install._resolve_command("mimir-serve") == "mimir-serve"
+
+
+def test_install_hook_writes_resolved_absolute_command(monkeypatch, tmp_path):
+    import mimir.hook_install as hook_install
+
+    settings = tmp_path / "settings.json"
+    monkeypatch.setattr(hook_install, "_resolve_command", lambda name: f"/resolved/{name}")
+    install_hook(settings)
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    cmds = {e["command"] for g in data["hooks"]["PostToolUse"] for e in g["hooks"]}
+    assert cmds == {"/resolved/mimir-hook"}
+
+
+def test_install_cline_hook_writes_resolved_absolute_command(monkeypatch, tmp_path):
+    import mimir.hook_install as hook_install
+
+    hooks_dir = tmp_path / "Hooks"
+    monkeypatch.setattr(hook_install, "_resolve_command", lambda name: f"/resolved/{name}")
+    install_cline_hook(hooks_dir)
+    script = (hooks_dir / "PostToolUse").read_text(encoding="utf-8")
+    assert "exec /resolved/mimir-hook-cline" in script
 
 
 # --- end-to-end: consolidate (log -> gated lessons) -> serve-side store (#1/#2) ---

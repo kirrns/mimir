@@ -4,8 +4,10 @@ settings.json, or write the PostToolUse script Cline picks up automatically.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import sysconfig
 from pathlib import Path
 from typing import Iterable
 
@@ -21,6 +23,34 @@ MCP_SERVER_COMMAND = "mimir-serve"
 DEFAULT_CLINE_HOOKS_DIR = Path.home() / "Documents" / "Cline" / "Rules" / "Hooks"
 CLINE_HOOK_NAME = "PostToolUse"
 CLINE_HOOK_COMMAND = "mimir-hook-cline"
+
+
+# ---- resolving where an installed console script actually lives -----------
+
+def _resolve_command(name: str) -> str:
+    """Absolute path to the installed console script `name`, if we can find
+    one -- otherwise `name` unchanged.
+
+    Registration runs once, in this process. The hook or MCP server it
+    points at runs later, in a different shell (Claude Code's bash, a fresh
+    PowerShell) that may not share this process's PATH -- most commonly a
+    `pip install --user` on Windows, whose Scripts directory isn't on PATH
+    by default. Resolving to an absolute path now avoids a "command not
+    found" later in a shell we don't control.
+    """
+    found = shutil.which(name)
+    if found:
+        return found
+    exe = f"{name}.exe" if os.name == "nt" else name
+    for scheme in (sysconfig.get_default_scheme(), "nt_user" if os.name == "nt" else "posix_user"):
+        try:
+            scripts_dir = Path(sysconfig.get_path("scripts", scheme=scheme))
+        except (KeyError, ValueError):
+            continue
+        candidate = scripts_dir / exe
+        if candidate.exists():
+            return str(candidate)
+    return name
 
 
 # ---- pure, testable settings merge ----------------------------------------
@@ -74,6 +104,7 @@ def install_hook(settings_path: Path = DEFAULT_SETTINGS, *,
                  command: str = HOOK_COMMAND,
                  events: Iterable[str] = HOOK_EVENTS) -> str:
     """Merge the capture hook into settings.json. Idempotent; backs up first."""
+    command = _resolve_command(command)
     settings = _load_settings(settings_path)
     updated = settings
     for event in events:
@@ -97,6 +128,7 @@ def register_mcp_server(*, name: str = MCP_SERVER_NAME,
     claude = shutil.which("claude")
     if claude is None:
         return "claude CLI not found on PATH -- skipped MCP registration (capture hook still installed)"
+    command = _resolve_command(command)
     result = subprocess.run(
         [claude, "mcp", "add", name, "--", command],
         capture_output=True, text=True,
@@ -118,6 +150,7 @@ def install_cline_hook(hooks_dir: Path = DEFAULT_CLINE_HOOKS_DIR, *,
                        command: str = CLINE_HOOK_COMMAND) -> str:
     """Write the PostToolUse hook script Cline picks up automatically. It's mimir's own
     file (nothing to merge, unlike Claude Code's settings.json), so this just overwrites."""
+    command = _resolve_command(command)
     hooks_dir.mkdir(parents=True, exist_ok=True)
     script_path = hooks_dir / CLINE_HOOK_NAME
     # newline="\n": the shebang line must stay LF-only even when written on Windows,
