@@ -1,7 +1,10 @@
 """Mimir CLI — the zero-hustle entry points (PRD G5).
 
-Installed by `pip install mimir`:
+Installed by `pip install 'mimir[mcp]'`:
 
+    mimir setup                  # one command: registers the capture hook AND
+                                 #   mimir-serve as an MCP server (via `claude mcp
+                                 #   add`, if the `claude` CLI is on PATH)
     mimir-hook                   # the command a Claude Code hook calls (reads
                                  #   stdin, appends one EPISODE, always exits 0)
     mimir consolidate            # slow path (C2): turn logged failure EPISODEs into
@@ -18,10 +21,10 @@ Installed by `pip install mimir`:
                                  #   config (see docs/integrations/generic.md); or set
                                  #   MIMIR_HOOK_CONFIG instead of --config
 
-The end-to-end demo: install-hook (capture) -> use Claude -> `mimir consolidate`
-(distill lessons into the LanceDB-backed store) -> `mimir-serve` (gated recall
-over MCP). The store is the same on both sides, so what you consolidate is what
-gets served.
+The end-to-end demo: `mimir setup` (capture + MCP registration) -> use Claude ->
+`mimir consolidate` (distill lessons into the LanceDB-backed store) -> lessons
+now come back over MCP via `mimir.recall`. The store is the same on both sides,
+so what you consolidate is what gets served.
 """
 from __future__ import annotations
 
@@ -44,6 +47,7 @@ from mimir.hook_install import (
     hook_block,
     install_cline_hook,
     install_hook,
+    register_mcp_server,
 )
 from mimir.models import Episode, Lesson
 from mimir.store_io import (
@@ -281,6 +285,10 @@ def main(argv: Optional[list] = None) -> int:
         print(__doc__)
         return 0
     cmd, rest = argv[0], argv[1:]
+    if cmd == "setup":
+        print(install_hook())
+        print(register_mcp_server())
+        return 0
     if cmd == "install-hook":
         if "--cline" in rest:
             if "--print" in rest:

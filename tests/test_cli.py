@@ -3,7 +3,13 @@ import logging
 
 import pytest
 
-from mimir.hook_install import add_hook_command, cline_hook_script, install_cline_hook, install_hook
+from mimir.hook_install import (
+    add_hook_command,
+    cline_hook_script,
+    install_cline_hook,
+    install_hook,
+    register_mcp_server,
+)
 
 
 def test_add_hook_command_is_idempotent():
@@ -112,6 +118,66 @@ def test_install_hook_refuses_invalid_json(tmp_path):
         assert False, "should have refused invalid JSON"
     except SystemExit:
         pass
+
+
+def test_register_mcp_server_skips_when_claude_cli_missing(monkeypatch):
+    import mimir.hook_install as hook_install
+
+    monkeypatch.setattr(hook_install.shutil, "which", lambda name: None)
+    msg = register_mcp_server()
+    assert "not found on PATH" in msg
+
+
+def test_register_mcp_server_succeeds(monkeypatch):
+    import mimir.hook_install as hook_install
+
+    monkeypatch.setattr(hook_install.shutil, "which", lambda name: "/usr/bin/claude")
+    calls = []
+
+    class _Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return _Result()
+
+    monkeypatch.setattr(hook_install.subprocess, "run", fake_run)
+    msg = register_mcp_server()
+    assert "registered" in msg
+    assert calls == [["/usr/bin/claude", "mcp", "add", "mimir", "--", "mimir-serve"]]
+
+
+def test_register_mcp_server_is_idempotent_when_already_registered(monkeypatch):
+    import mimir.hook_install as hook_install
+
+    monkeypatch.setattr(hook_install.shutil, "which", lambda name: "/usr/bin/claude")
+
+    class _Result:
+        returncode = 1
+        stdout = ""
+        stderr = "MCP server mimir already exists"
+
+    monkeypatch.setattr(hook_install.subprocess, "run", lambda cmd, **kwargs: _Result())
+    msg = register_mcp_server()
+    assert "already registered" in msg
+
+
+def test_register_mcp_server_reports_other_failures(monkeypatch):
+    import mimir.hook_install as hook_install
+
+    monkeypatch.setattr(hook_install.shutil, "which", lambda name: "/usr/bin/claude")
+
+    class _Result:
+        returncode = 1
+        stdout = ""
+        stderr = "boom: permission denied"
+
+    monkeypatch.setattr(hook_install.subprocess, "run", lambda cmd, **kwargs: _Result())
+    msg = register_mcp_server()
+    assert "failed" in msg
+    assert "permission denied" in msg
 
 
 # --- end-to-end: consolidate (log -> gated lessons) -> serve-side store (#1/#2) ---
@@ -327,6 +393,16 @@ def test_main_dispatches_export_command(monkeypatch):
     monkeypatch.setattr(cli, "export_main", lambda rest: calls.append(rest) or 0)
     assert cli.main(["export", "--digest"]) == 0
     assert calls == [["--digest"]]
+
+
+def test_main_dispatches_setup_command_runs_hook_and_mcp_registration(monkeypatch):
+    import mimir.cli as cli
+
+    calls = []
+    monkeypatch.setattr(cli, "install_hook", lambda: calls.append("hook") or "hook done")
+    monkeypatch.setattr(cli, "register_mcp_server", lambda: calls.append("mcp") or "mcp done")
+    assert cli.main(["setup"]) == 0
+    assert calls == ["hook", "mcp"]
 
 
 import io

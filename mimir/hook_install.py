@@ -4,12 +4,17 @@ settings.json, or write the PostToolUse script Cline picks up automatically.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Iterable
 
 DEFAULT_SETTINGS = Path.home() / ".claude" / "settings.json"
 HOOK_COMMAND = "mimir-hook"
 HOOK_EVENTS = ("PostToolUse", "SessionEnd")
+
+MCP_SERVER_NAME = "mimir"
+MCP_SERVER_COMMAND = "mimir-serve"
 
 # Cline has no settings.json to merge into — it picks up an executable script named after
 # the hook event from this directory (global scope; see docs.cline.bot/features/hooks).
@@ -81,6 +86,27 @@ def install_hook(settings_path: Path = DEFAULT_SETTINGS, *,
         backup.write_text(settings_path.read_text(encoding="utf-8"), encoding="utf-8")
     settings_path.write_text(json.dumps(updated, indent=2), encoding="utf-8")
     return f"registered {command} for {', '.join(events)} in {settings_path}"
+
+
+def register_mcp_server(*, name: str = MCP_SERVER_NAME,
+                        command: str = MCP_SERVER_COMMAND) -> str:
+    """Register `mimir-serve` as an MCP server via the Claude Code CLI
+    (`claude mcp add`). Skips, rather than errors, when `claude` isn't on
+    PATH -- setup should still succeed for hook-only capture use. Idempotent:
+    an "already exists" failure is reported as success, not retried."""
+    claude = shutil.which("claude")
+    if claude is None:
+        return "claude CLI not found on PATH -- skipped MCP registration (capture hook still installed)"
+    result = subprocess.run(
+        [claude, "mcp", "add", name, "--", command],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        return f"registered {command} as MCP server '{name}'"
+    output = f"{result.stderr}{result.stdout}".lower()
+    if "already exists" in output:
+        return f"MCP server '{name}' already registered"
+    return f"MCP registration failed: {(result.stderr or result.stdout).strip()}"
 
 
 def cline_hook_script(command: str = CLINE_HOOK_COMMAND) -> str:

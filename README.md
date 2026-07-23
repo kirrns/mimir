@@ -133,23 +133,29 @@ needs no server — open it directly and screen-record the bars filling in.
 ## Quickstart
 
 ```bash
-pip install 'mimir[mcp]'
-
-# 1. Capture: register the hook into Claude Code (~/.claude/settings.json)
-mimir install-hook          # idempotent; --print to paste the block yourself
-
-# 2. Work normally. Failures get logged to ~/.mimir/episodes.jsonl.
-
-# 3. Consolidate: happens automatically in the background once enough
-#    failures pile up (see "day to day" above) -- or run it yourself:
-mimir consolidate
-
-# 4. Serve: gated recall over MCP (stdio), backed by the same store
-mimir-serve
+pip install 'mimir[mcp]' && mimir setup
 ```
 
-What you consolidate is what gets served — both sides run on the same
+One command: it registers the capture hook into Claude Code
+(`~/.claude/settings.json`) and registers `mimir-serve` as an MCP server
+(via `claude mcp add`, if the `claude` CLI is on `PATH` — otherwise it says
+so and capture still works on its own). From here:
+
+```bash
+# Work normally. Failures get logged to ~/.mimir/episodes.jsonl.
+
+# Consolidate: happens automatically in the background once enough
+# failures pile up (see "day to day" above) -- or run it yourself:
+mimir consolidate
+```
+
+Lessons then come back automatically through `mimir.recall` over MCP — what
+you consolidate is what gets served, both sides run on the same
 LanceDB-backed lesson store under `~/.mimir/`.
+
+Prefer to do it by hand, or your client isn't the `claude` CLI? `mimir
+install-hook` registers just the capture hook, and `mimir-serve` is a
+stdio MCP server you can point any MCP client at directly.
 
 **Windows:** pip installs the `mimir`/`mimir-hook`/`mimir-serve` commands into
 `%APPDATA%\Python\Python3XX\Scripts`, which often isn't on `PATH` by default —
