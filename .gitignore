@@ -54,3 +54,9 @@ Thumbs.db
 
 # --- Internal submission prep: never commit, never push ---
 INTERNAL_*.md
+
+# --- brag video project (raw editing source: planning docs, raw VO
+# takes, bundled third-party music with unverified redistribution
+# license, debug snapshots). Only the final assets/demo.mp4 +
+# assets/demo-poster.jpg are meant to be public. ---
+brag-output/
